@@ -23,7 +23,6 @@ BASE_URL = "https://data.sec.gov/submissions/"
 # -------------------------
 GAAP_TAGS = {
     "net_receivables": ["AccountsReceivableNetCurrent", "AccountsReceivableNetTradeCurrent"],
-    "sales": ["Revenues", "SalesRevenueNet"],
     "cogs": ["CostOfGoodsAndServicesSold"],
     "current_assets": ["AssetsCurrent"],
     "ppe": ["PropertyPlantAndEquipmentNet"],
@@ -33,11 +32,11 @@ GAAP_TAGS = {
     "sg&a": ["SellingGeneralAndAdministrativeExpense"],
     "current_liabilities": ["LiabilitiesCurrent"],
     "long_term_debt": ["LongTermDebtNoncurrent", "LongTermDebt"],
-    "income_continuing_ops": ["IncomeLossFromContinuingOperations", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes"],
+    "income_continuing_ops": ["IncomeLossFromContinuingOperations", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"],
     "cash_from_ops": ["NetCashProvidedByUsedInOperatingActivities"],
     "retained_earnings": ["RetainedEarningsAccumulatedDeficit"],
     "gross_profit": ["GrossProfit"],
-    "revenue": ["Revenues"]
+    "revenue": ["Revenues", "SalesRevenueNet", "SalesRevenueServicesNet", "RevenueFromContractWithCustomerExcludingAssessedTax"]
     # Market value of equity will require external stock price and shares outstanding
 }
 
@@ -174,10 +173,10 @@ def enrich_with_metrics(cik, filings):
             metrics[key] = extract_metric(companyfacts, tags, fy)
 
         # Compute ratios
-        total_assets = metrics.get("total_assets")
-        metrics["working_cap_over_total_assets"] = (
-            (metrics.get("current_assets", 0) - metrics.get("current_liabilities", 0)) / total_assets
-        ) if total_assets else None
+        # total_assets = metrics.get("total_assets")
+        # metrics["working_cap_over_total_assets"] = (
+        #     (metrics.get("current_assets", 0) - metrics.get("current_liabilities", 0)) / total_assets
+        # ) if total_assets else None
 
         # metrics["retained_over_total_assets"] = (
         #     metrics.get("retained_earnings", 0) / total_assets
