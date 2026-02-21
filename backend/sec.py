@@ -4,6 +4,8 @@ import os
 import sys
 from datetime import datetime, timedelta
 import yfinance as yf
+import xml.etree.ElementTree as ET
+import keys
 # -------------------------
 # SEC headers and URLs
 # -------------------------
@@ -61,6 +63,108 @@ def get_cik_from_company_name(company_name):
 
     return None, None, None
 
+
+def process_form4_insiders(ticker):
+    insider_data = {}
+
+    file_name = f"{ticker}_insider_data.json"
+    if not os.path.exists(file_name):
+
+        endpoint = "https://api.sec-api.io/insider-trading"
+        params = {
+            "query": f"issuer.tradingSymbol:{ticker}",
+            "from": "0",
+            "size": "50",
+            "sort": [{ "filedAt": { "order": "desc" } }]
+        }
+
+        response = requests.post(endpoint, json=params, headers={"Authorization": keys.FORM4_API_KEY})
+        if response.status_code != 200:
+            raise Exception(f"Form4 API error: {response.status_code} - {response.text}")
+        
+        data = response.json()
+        with open(file_name, "w") as f:
+            json.dump(data, f, indent=4)
+
+    with open(file_name, "r") as f:
+        data = json.load(f)
+
+    for txn_filing in data.get("transactions", []):
+        owner_info = txn_filing.get("reportingOwner", {})
+        owner_name = owner_info.get("name", "Unknown").strip()
+
+        if owner_name not in insider_data:
+            relationship = owner_info.get("relationship", {})
+            insider_data[owner_name] = {
+                "is_director": relationship.get("isDirector", False),
+                "is_officer": relationship.get("isOfficer", False),
+                "officer_title": relationship.get("officerTitle", ""),
+                "is_ten_percent_owner": relationship.get("isTenPercentOwner", False),
+                "shares_bought": 0,
+                "shares_sold": 0,
+                "dollar_bought": 0.0,
+                "dollar_sold": 0.0,
+                "buy_transactions": 0,
+                "sell_transactions": 0,
+            }
+
+        # Process non-derivative transactions (e.g. common stock buys/sells)
+        nd_table = txn_filing.get("nonDerivativeTable", {})
+        for txn in nd_table.get("transactions", []):
+            code = txn.get("coding", {}).get("code", "")
+            amounts = txn.get("amounts", {})
+            shares = amounts.get("shares", 0) or 0
+            price = amounts.get("pricePerShare", 0) or 0
+            dollar_val = shares * price
+
+            if code == "P":
+                insider_data[owner_name]["shares_bought"] += shares
+                insider_data[owner_name]["dollar_bought"] += dollar_val
+                insider_data[owner_name]["buy_transactions"] += 1
+            elif code == "S":
+                insider_data[owner_name]["shares_sold"] += shares
+                insider_data[owner_name]["dollar_sold"] += dollar_val
+                insider_data[owner_name]["sell_transactions"] += 1
+
+        # Process derivative transactions (e.g. options exercises)
+        d_table = txn_filing.get("derivativeTable", {})
+        for txn in d_table.get("transactions", []):
+            code = txn.get("coding", {}).get("code", "")
+            amounts = txn.get("amounts", {})
+            shares = amounts.get("shares", 0) or 0
+            price = amounts.get("pricePerShare", 0) or 0
+            dollar_val = shares * price
+
+            if code == "P":
+                insider_data[owner_name]["shares_bought"] += shares
+                insider_data[owner_name]["dollar_bought"] += dollar_val
+                insider_data[owner_name]["buy_transactions"] += 1
+            elif code == "S":
+                insider_data[owner_name]["shares_sold"] += shares
+                insider_data[owner_name]["dollar_sold"] += dollar_val
+                insider_data[owner_name]["sell_transactions"] += 1
+
+    # Compute ratios per insider
+    for name, info in insider_data.items():
+        total_transactions = info["buy_transactions"] + info["sell_transactions"]
+        total_dollar = info["dollar_bought"] + info["dollar_sold"]
+
+        if info["sell_transactions"] > 0:
+            info["selling_ratio_transactions"] = round(info["buy_transactions"] / info["sell_transactions"], 4)
+        else:
+            info["selling_ratio_transactions"] = None  # no sales
+
+        if info["dollar_sold"] > 0:
+            info["selling_ratio_dollar"] = round(info["dollar_bought"] / info["dollar_sold"], 4)
+        else:
+            info["selling_ratio_dollar"] = None  # no sales
+
+        info["total_transactions"] = total_transactions
+        info["total_dollar"] = round(total_dollar, 2)
+        info["dollar_bought"] = round(info["dollar_bought"], 2)
+        info["dollar_sold"] = round(info["dollar_sold"], 2)
+
+    return insider_data
 
 def fetch_json(url):
     r = requests.get(url, headers=HEADERS)
@@ -190,28 +294,6 @@ def enrich_with_metrics(cik, filings, ticker_s):
         except Exception as e:
             # print(f"Error fetching market data for CIK {cik}: {e}")
             metrics["market_equity"] = None
-
-        # Compute ratios
-        # total_assets = metrics.get("total_assets")
-        # metrics["working_cap_over_total_assets"] = (
-        #     (metrics.get("current_assets", 0) - metrics.get("current_liabilities", 0)) / total_assets
-        # ) if total_assets else None
-
-        # metrics["retained_over_total_assets"] = (
-        #     metrics.get("retained_earnings", 0) / total_assets
-        # ) if total_assets else None
-
-        # metrics["ebit_over_total_assets"] = (
-        #     metrics.get("ebit", 0) / total_assets
-        # ) if total_assets else None
-
-        # metrics["sales_over_total_assets"] = (
-        #     metrics.get("sales", 0) / total_assets
-        # ) if total_assets else None
-
-        # Market value of equity / total liabilities (external data required)
-        # metrics["market_equity_over_liabilities"] = None
-
         tenk["metrics"] = metrics
 
     return filings
@@ -236,8 +318,15 @@ def main():
     print(f"CIK: {cik}")
     print(f"Ticker: {ticker_s}")
 
+    # check if json file exists
+    filename = f"{ticker_s}_SEC.json"
+    if os.path.exists(filename):
+        print(f"Found existing file {filename}, exiting...")
+        return
+
     filings = get_required_filings(cik)
     filings = enrich_with_metrics(cik, filings, ticker_s)
+    insiders = process_form4_insiders(ticker_s)
 
     output = {
         "company": official_name,
@@ -248,10 +337,11 @@ def main():
             max([f["year"] for f in filings["10K"]])-1
         ]],
         "all_8K_until_1yr_back": filings["8K"],
-        "Form4_this_year_only": filings["Form4"]
+        "Form4_this_year_only": filings["Form4"],
+        "insider_summary": insiders
     }
 
-    filename = f"{ticker_s}_SEC_combined.json"
+    filename = f"{ticker_s}_SEC.json"
     with open(filename, "w") as f:
         json.dump(output, f, indent=4)
 
