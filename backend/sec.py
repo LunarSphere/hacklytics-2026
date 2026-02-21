@@ -24,7 +24,7 @@ BASE_URL = "https://data.sec.gov/submissions/"
 GAAP_TAGS = {
     "net_receivables": ["AccountsReceivableNetCurrent", "AccountsReceivableNetTradeCurrent"],
     "sales": ["Revenues", "SalesRevenueNet"],
-    "cogs": ["CostOfGoodsSold"],
+    "cogs": ["CostOfGoodsAndServicesSold"],
     "current_assets": ["AssetsCurrent"],
     "ppe": ["PropertyPlantAndEquipmentNet"],
     "securities": ["AvailableForSaleSecuritiesCurrent", "MarketableSecuritiesCurrent"],
@@ -36,7 +36,8 @@ GAAP_TAGS = {
     "income_continuing_ops": ["IncomeLossFromContinuingOperations", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes"],
     "cash_from_ops": ["NetCashProvidedByUsedInOperatingActivities"],
     "retained_earnings": ["RetainedEarningsAccumulatedDeficit"],
-    "ebit": ["EarningsBeforeInterestAndTaxes"],
+    "gross_profit": ["GrossProfit"],
+    "revenue": ["Revenues"]
     # Market value of equity will require external stock price and shares outstanding
 }
 
@@ -178,17 +179,17 @@ def enrich_with_metrics(cik, filings):
             (metrics.get("current_assets", 0) - metrics.get("current_liabilities", 0)) / total_assets
         ) if total_assets else None
 
-        metrics["retained_over_total_assets"] = (
-            metrics.get("retained_earnings", 0) / total_assets
-        ) if total_assets else None
+        # metrics["retained_over_total_assets"] = (
+        #     metrics.get("retained_earnings", 0) / total_assets
+        # ) if total_assets else None
 
         # metrics["ebit_over_total_assets"] = (
         #     metrics.get("ebit", 0) / total_assets
         # ) if total_assets else None
 
-        metrics["sales_over_total_assets"] = (
-            metrics.get("sales", 0) / total_assets
-        ) if total_assets else None
+        # metrics["sales_over_total_assets"] = (
+        #     metrics.get("sales", 0) / total_assets
+        # ) if total_assets else None
 
         # Market value of equity / total liabilities (external data required)
         metrics["market_equity_over_liabilities"] = None
