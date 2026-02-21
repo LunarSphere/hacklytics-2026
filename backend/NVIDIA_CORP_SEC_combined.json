@@ -1,14 +1,35 @@
 {
     "company": "NVIDIA CORP",
     "cik": "0001045810",
-    "two_most_recent_10K": [
+    "10K_latest_and_prior": [
         {
             "year": 2025,
             "form": "10-K",
             "filing_date": "2025-02-26",
             "accession_number": "0001045810-25-000023",
             "primary_document": "nvda-20250126.htm",
-            "filing_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000023/nvda-20250126.htm"
+            "filing_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581025000023/nvda-20250126.htm",
+            "metrics": {
+                "net_receivables": 9999000000,
+                "sales": 26974000000,
+                "cogs": null,
+                "current_assets": 44345000000,
+                "ppe": 3914000000,
+                "securities": 18704000000,
+                "total_assets": 65728000000,
+                "depreciation": 1544000000,
+                "sg&a": 2440000000,
+                "current_liabilities": 10631000000,
+                "long_term_debt": 8459000000,
+                "income_continuing_ops": null,
+                "cash_from_ops": 5641000000,
+                "retained_earnings": 29817000000,
+                "ebit": null,
+                "working_cap_over_total_assets": 0.5129320837390458,
+                "retained_over_total_assets": 0.4536422833495618,
+                "sales_over_total_assets": 0.41038826679649465,
+                "market_equity_over_liabilities": null
+            }
         },
         {
             "year": 2024,
@@ -16,7 +37,28 @@
             "filing_date": "2024-02-21",
             "accession_number": "0001045810-24-000029",
             "primary_document": "nvda-20240128.htm",
-            "filing_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581024000029/nvda-20240128.htm"
+            "filing_url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581024000029/nvda-20240128.htm",
+            "metrics": {
+                "net_receivables": 3827000000,
+                "sales": 26914000000,
+                "cogs": null,
+                "current_assets": 23073000000,
+                "ppe": 3807000000,
+                "securities": 9907000000,
+                "total_assets": 41182000000,
+                "depreciation": 1174000000,
+                "sg&a": 2166000000,
+                "current_liabilities": 6563000000,
+                "long_term_debt": 9703000000,
+                "income_continuing_ops": null,
+                "cash_from_ops": 9108000000,
+                "retained_earnings": 10171000000,
+                "ebit": null,
+                "working_cap_over_total_assets": 0.4009033072701666,
+                "retained_over_total_assets": 0.24697683453936187,
+                "sales_over_total_assets": 0.6535379534748191,
+                "market_equity_over_liabilities": null
+            }
         }
     ],
     "all_8K_until_1yr_back": [
