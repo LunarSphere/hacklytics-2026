@@ -25,7 +25,7 @@
                 "retained_earnings": -19154000000,
                 "gross_profit": 169148000000,
                 "revenue": 383285000000,
-                "market_equity_over_liabilities": null
+                "market_equity": 3884336021200.0
             }
         },
         {
@@ -51,7 +51,7 @@
                 "retained_earnings": -214000000,
                 "gross_profit": 170782000000,
                 "revenue": 394328000000,
-                "market_equity_over_liabilities": null
+                "market_equity": 3884336021200.0
             }
         }
     ],

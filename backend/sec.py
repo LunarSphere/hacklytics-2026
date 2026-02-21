@@ -3,7 +3,7 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta
-
+import yfinance as yf
 # -------------------------
 # SEC headers and URLs
 # -------------------------
@@ -54,9 +54,9 @@ def get_cik_from_company_name(company_name):
     company_name = company_name.lower()
     for entry in data.values():
         if company_name in entry["title"].lower():
-            return str(entry["cik_str"]).zfill(10), entry["title"]
+            return str(entry["cik_str"]).zfill(10), entry["title"], entry["ticker"]
 
-    return None, None
+    return None, None, None
 
 
 def fetch_json(url):
@@ -152,7 +152,7 @@ def get_required_filings(cik):
 # -------------------------
 # Extract financial metrics
 # -------------------------
-def enrich_with_metrics(cik, filings):
+def enrich_with_metrics(cik, filings, ticker_s):
     companyfacts = fetch_json(COMPANYFACTS_URL.format(cik=cik))
 
     # Determine the current FY (latest 10-K year)
@@ -171,6 +171,22 @@ def enrich_with_metrics(cik, filings):
         metrics = {}
         for key, tags in GAAP_TAGS.items():
             metrics[key] = extract_metric(companyfacts, tags, fy)
+        # comupute total market equity using yfinance
+        #get ticker symbol with tickers.json
+
+        ticker = yf.Ticker(ticker_s)
+        try:
+            stock_info = ticker.info
+            shares_outstanding = stock_info.get("sharesOutstanding")
+            current_price = stock_info.get("currentPrice")
+            if shares_outstanding and current_price:
+                market_equity = shares_outstanding * current_price
+                metrics["market_equity"] = market_equity
+            else:
+                metrics["market_equity"] = None
+        except Exception as e:
+            # print(f"Error fetching market data for CIK {cik}: {e}")
+            metrics["market_equity"] = None
 
         # Compute ratios
         # total_assets = metrics.get("total_assets")
@@ -191,7 +207,7 @@ def enrich_with_metrics(cik, filings):
         # ) if total_assets else None
 
         # Market value of equity / total liabilities (external data required)
-        metrics["market_equity_over_liabilities"] = None
+        # metrics["market_equity_over_liabilities"] = None
 
         tenk["metrics"] = metrics
 
@@ -207,7 +223,7 @@ def main():
         sys.exit(1)
 
     company_name = sys.argv[1]
-    cik, official_name = get_cik_from_company_name(company_name)
+    cik, official_name, ticker_s = get_cik_from_company_name(company_name)
 
     if not cik:
         print("Company not found.")
@@ -215,9 +231,10 @@ def main():
 
     print(f"Found company: {official_name}")
     print(f"CIK: {cik}")
+    print(f"Ticker: {ticker_s}")
 
     filings = get_required_filings(cik)
-    filings = enrich_with_metrics(cik, filings)
+    filings = enrich_with_metrics(cik, filings, ticker_s)
 
     output = {
         "company": official_name,
@@ -230,7 +247,7 @@ def main():
         "Form4_this_year_only": filings["Form4"]
     }
 
-    filename = f"{official_name.replace(' ', '_')}_SEC_combined.json"
+    filename = f"{ticker_s}_SEC_combined.json"
     with open(filename, "w") as f:
         json.dump(output, f, indent=4)
 
