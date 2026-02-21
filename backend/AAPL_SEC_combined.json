@@ -1,6 +1,7 @@
 {
     "company": "Apple Inc.",
     "cik": "0000320193",
+    "ticker": "AAPL",
     "10K_latest_and_prior": [
         {
             "year": 2025,

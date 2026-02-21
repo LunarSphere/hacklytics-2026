@@ -242,6 +242,7 @@ def main():
     output = {
         "company": official_name,
         "cik": cik,
+        "ticker": ticker_s,
         "10K_latest_and_prior": [tenk for tenk in filings["10K"] if tenk["year"] in [
             max([f["year"] for f in filings["10K"]]),
             max([f["year"] for f in filings["10K"]])-1

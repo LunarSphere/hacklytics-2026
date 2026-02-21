@@ -1,6 +1,7 @@
 import numpy as np
 import json
 from datetime import date
+import yfinance as yf
 
 ### The goal of this python is to take the filtered SEC fillings and calculate the financial metrics for fraud detection.
 ### We will normalize each variable, weigh them and combine them into a single composite score 0 - 100
@@ -19,7 +20,8 @@ def load_data():
 
     company_info = {
         "company": raw["company"],
-        "cik": raw["cik"]
+        "cik": raw["cik"],  
+        "ticker": raw["ticker"]
     }
 
     filings = raw["10K_latest_and_prior"]
@@ -80,6 +82,41 @@ def Accruals_ratio(data_t):
     accruals_ratio = accruals / data_t["total_assets"] if data_t["total_assets"] != 0 else 0
     return accruals_ratio
 
+def short_interest(ticker_s): 
+    """
+    Score how interested people are in shorting the stock. This can be a signal of potential fraud if 
+    there is a high level of short interest, as it may indicate that investors are betting against the company.
+    """
+    ticker = yf.Ticker(ticker_s)
+    info = ticker.info
+    
+    shares_short = info.get("sharesShort", 0)
+    float_shares = info.get("floatShares", 0)
+    avg_volume = info.get("averageVolume", 0)
+    
+    short_ratio = info.get("shortRatio", 0)  # days to cover
+    short_percent_of_float = info.get("shortPercentOfFloat", 0)
+    
+    return {
+        "shares_short": shares_short,
+        "short_percent_of_float": round(short_percent_of_float * 100, 2),
+        "days_to_cover": short_ratio,
+        "signal": classify_short_interest(short_percent_of_float, short_ratio)
+    }
+
+def classify_short_interest(pct_float, days_to_cover):
+    if pct_float < 0.05 and days_to_cover < 3:
+        return {"label": "Low Short Interest", "color": "green", "score": 10}
+    elif pct_float < 0.10 and days_to_cover < 5:
+        return {"label": "Moderate Short Interest", "color": "yellow", "score": 40}
+    elif pct_float < 0.20 and days_to_cover < 10:
+        return {"label": "High Short Interest", "color": "orange", "score": 70}
+    else:
+        return {"label": "Very High Short Interest", "color": "red", "score": 90} 
+    
+
+# TODO: Normalize Values, Assign weights and compute composite score for fraud risk
+# TODO: make one big function that returns all the metrics and the composite score for fraud risk.
 
 
 def main():
@@ -92,6 +129,10 @@ def main():
     print(f"Altman Z-Score: {z_score_value}")
     accruals_ratio_value = Accruals_ratio(data_t)
     print(f"Accruals Ratio: {accruals_ratio_value}")
+    short_interest_value = short_interest(company_info['ticker'])
+    # print the risk score and label for short interest
+    print(f"Short Interest: {short_interest_value['signal']['label']} (Score: {short_interest_value['signal']['score']})")
+
 
 if __name__ == '__main__':
     main()
