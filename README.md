@@ -36,9 +36,11 @@ Insider&Options
 
 
 ## Team Roles  
-Kevius: 
+Kevius John Finance Open to doing data. : Quantitative metrics, Analyze supply chain trends if availible, Industry benchmark if possible, Analyze stock trends. 
 Toby: 
 Ryon: 
 Wyatt: 
+
+Availible Roles: Frontend, Data pipeline (gives the rest of the team clean standardized data), Orchestrate agents&Public sentiment
 
 Ok so -I'm thinking we Pivot from investing or at least reccomending stocks. to building a stock risk report by looking at public sentiment about a company (News, job postings, supply trends), and look at Quantitaive metrics for evidence of fraud. 
