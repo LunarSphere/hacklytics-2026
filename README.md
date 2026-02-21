@@ -36,8 +36,8 @@ Insider&Options
 
 
 ## Team Roles  
-Kevius John Finance Open to doing data. : Quantitative metrics, Analyze supply chain trends if availible, Industry benchmark if possible, Analyze stock trends. 
-Toby: 
+Kevius John Finance Open to doing data. : Quantitative metrics, Analyze supply chain trends if availible, Industry benchmark if possible, Analyze stock trends.  
+Toby: If no one else wants to do frontend I can. I can also deal with data stuff.  
 Ryon: 
 Wyatt: 
 
