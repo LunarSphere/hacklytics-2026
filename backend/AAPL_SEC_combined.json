@@ -25,6 +25,9 @@
                 "retained_earnings": -19154000000,
                 "gross_profit": 169148000000,
                 "revenue": 383285000000,
+                "ebit": 114301000000,
+                "liabilities": 308030000000,
+                "net_income_loss": 96995000000,
                 "market_equity": 3884336021200.0
             }
         },
@@ -51,6 +54,9 @@
                 "retained_earnings": -214000000,
                 "gross_profit": 170782000000,
                 "revenue": 394328000000,
+                "ebit": 119437000000,
+                "liabilities": 290437000000,
+                "net_income_loss": 99803000000,
                 "market_equity": 3884336021200.0
             }
         }

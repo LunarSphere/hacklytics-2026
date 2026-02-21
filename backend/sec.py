@@ -32,11 +32,14 @@ GAAP_TAGS = {
     "sg&a": ["SellingGeneralAndAdministrativeExpense"],
     "current_liabilities": ["LiabilitiesCurrent"],
     "long_term_debt": ["LongTermDebtNoncurrent", "LongTermDebt"],
-    "income_continuing_ops": ["IncomeLossFromContinuingOperations", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"],
+    "income_continuing_ops": ["IncomeLossFromContinuingOperations", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"], #pretax
     "cash_from_ops": ["NetCashProvidedByUsedInOperatingActivities"],
     "retained_earnings": ["RetainedEarningsAccumulatedDeficit"],
     "gross_profit": ["GrossProfit"],
-    "revenue": ["Revenues", "SalesRevenueNet", "SalesRevenueServicesNet", "RevenueFromContractWithCustomerExcludingAssessedTax"]
+    "revenue": ["Revenues", "SalesRevenueNet", "SalesRevenueServicesNet", "RevenueFromContractWithCustomerExcludingAssessedTax"],
+    "ebit": ["EarningsBeforeInterestAndTaxes", "OperatingIncomeLoss"],
+    "liabilities": ["Liabilities"],
+    "net_income_loss": ["NetIncomeLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"]
     # Market value of equity will require external stock price and shares outstanding
 }
 
