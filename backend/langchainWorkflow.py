@@ -198,12 +198,11 @@ def compute_fraud_scores(ticker: str) -> str:
 
 # ── Stock Health Agent Tools ─────────────────────────────────────────────────
 
-# TODO: Replace this URL with your actual FastAPI endpoint.
-STOCK_HEALTH_API_URL = "http://127.0.0.1:7171/health-score"
-
 @tool
 def fetch_stock_health(ticker: str) -> str:
-    """Fetch stock-health metrics from the FastAPI service for a given ticker.
+    """Query Databricks for stock-health metrics (Sharpe, Sortino, Alpha, Beta,
+    VaR 95%, CVaR 95%, Max Drawdown, Volatility, Composite Stock Health Score)
+    for a company given its stock ticker.
 
     Args:
         ticker: Stock ticker symbol (e.g. 'AAPL').
@@ -211,46 +210,73 @@ def fetch_stock_health(ticker: str) -> str:
     Returns:
         A formatted string with the retrieved health metrics, or an error message.
     """
+    if not DATABRICKS_TOKEN:
+        print(f"  [DEBUG:fetch_stock_health] DATABRICKS_TOKEN is empty/None!")
+        return (
+            "[error] Databricks credentials not configured. "
+            "Set databricks_sql_pa in .env."
+        )
+
     try:
-        print(f"  [tool:fetch_stock_health] Calling FastAPI for ticker={ticker.upper()}")
-        response = requests.get(
-            f"{STOCK_HEALTH_API_URL}/{ticker.upper()}",
-            timeout=30,
-        )
-        response.raise_for_status()
-        data = response.json()
+        print(f"  [tool:fetch_stock_health] Querying Databricks for ticker={ticker.upper()}")
+        print(f"  [DEBUG:fetch_stock_health] Token present: {bool(DATABRICKS_TOKEN)}, length: {len(DATABRICKS_TOKEN)}")
 
-        # Extract known health metrics from the API response.
-        sharpe      = data.get("sharpe", "N/A")
-        sortino     = data.get("sortino", "N/A")
-        alpha       = data.get("alpha", "N/A")
-        beta        = data.get("beta", "N/A")
-        var_95      = data.get("var_95", "N/A")
-        cvar_95     = data.get("cvar_95", "N/A")
-        max_dd      = data.get("max_drawdown", "N/A")
-        volatility  = data.get("volatility", "N/A")
-        composite   = data.get("composite_stock_health_score", "N/A")
-
-        return (
-            f"Stock Health Metrics for {ticker.upper()}:\n"
-            f"  Sharpe Ratio:                   {sharpe}\n"
-            f"  Sortino Ratio:                  {sortino}\n"
-            f"  Alpha:                          {alpha}\n"
-            f"  Beta:                           {beta}\n"
-            f"  Value at Risk (95%):            {var_95}\n"
-            f"  Conditional VaR (95%):          {cvar_95}\n"
-            f"  Max Drawdown:                   {max_dd}\n"
-            f"  Volatility:                     {volatility}\n"
-            f"  Composite Stock Health Score:   {composite}"
+        connection = sql.connect(
+            server_hostname="dbc-8d2119a9-8a9f.cloud.databricks.com",
+            http_path="/sql/1.0/warehouses/caf31424be59761a",
+            access_token=DATABRICKS_TOKEN,
         )
+        print(f"  [DEBUG:fetch_stock_health] Connection established successfully")
+        cursor = connection.cursor()
 
-    except requests.exceptions.ConnectionError:
-        return (
-            f"[error] Could not connect to stock-health API at {STOCK_HEALTH_API_URL}. "
-            f"Is the FastAPI server running?"
+        query = (
+            "SELECT Ticker, sharpe, sortino, alpha, beta, var_95, cvar_95, "
+            "max_drawdown, volatility, composite_stock_health_score "
+            "FROM workspace.default.stock_health "
+            "WHERE UPPER(Ticker) = UPPER(%(ticker)s) "
+            "LIMIT 1"
         )
+        params = {"ticker": ticker.upper()}
+        print(f"  [DEBUG:fetch_stock_health] Executing query with params: {params}")
+
+        cursor.execute(query, params)
+
+        row = cursor.fetchone()
+        print(f"  [DEBUG:fetch_stock_health] Query returned row: {row}")
+        print(f"  [DEBUG:fetch_stock_health] Row type: {type(row)}")
+
+        if row:
+            print(f"  [DEBUG:fetch_stock_health] Row length: {len(row)}")
+            for i, val in enumerate(row):
+                print(f"  [DEBUG:fetch_stock_health]   col[{i}] = {val!r} (type={type(val).__name__})")
+
+        cursor.close()
+        connection.close()
+
+        if not row:
+            print(f"  [DEBUG:fetch_stock_health] No row found for ticker '{ticker.upper()}'")
+            return f"No stock-health data found in the database for ticker '{ticker}'."
+
+        result = (
+            f"Stock Health Metrics for {row[0]}:\n"
+            f"  Sharpe Ratio:                   {row[1]}\n"
+            f"  Sortino Ratio:                  {row[2]}\n"
+            f"  Alpha:                          {row[3]}\n"
+            f"  Beta:                           {row[4]}\n"
+            f"  Value at Risk (95%):            {row[5]}\n"
+            f"  Conditional VaR (95%):          {row[6]}\n"
+            f"  Max Drawdown:                   {row[7]}\n"
+            f"  Volatility:                     {row[8]}\n"
+            f"  Composite Stock Health Score:   {row[9]}"
+        )
+        print(f"  [DEBUG:fetch_stock_health] Returning result:\n{result}")
+        return result
+
     except Exception as exc:
-        return f"[error] Stock-health API call failed for '{ticker}': {exc}"
+        print(f"  [DEBUG:fetch_stock_health] EXCEPTION: {type(exc).__name__}: {exc}")
+        import traceback
+        traceback.print_exc()
+        return f"[error] Databricks query failed for '{ticker}': {exc}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

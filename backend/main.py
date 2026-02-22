@@ -308,7 +308,13 @@ def get_report(
 ):
     """
     Calls the LangChain multi-agent workflow to produce a formal markdown
-    report covering news sentiment and quantitative risk metrics.
+    report covering news sentiment, quantitative fraud risk metrics, and
+    stock health metrics.
+
+    Returns a JSON object with:
+    - **tickers**: the tickers analysed
+    - **report_markdown**: the full formal report in markdown
+    - **summary**: a 1-2 paragraph executive summary
 
     - **tickers**: one or more comma-separated ticker symbols
     """
