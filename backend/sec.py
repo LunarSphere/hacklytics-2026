@@ -14,7 +14,8 @@ HEADERS = {
     "Host": "data.sec.gov"
 }
 
-LOCAL_TICKERS_FILE = "tickers.json"
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+LOCAL_TICKERS_FILE = os.path.join(BACKEND_DIR, "tickers.json")
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 BASE_URL = "https://data.sec.gov/submissions/"
@@ -265,7 +266,7 @@ def get_cik_from_ticker(ticker_symbol):
 def process_form4_insiders(ticker):
     insider_data = {}
 
-    file_name = f"{ticker}_insider_data.json"
+    file_name = os.path.join(BACKEND_DIR, f"{ticker}_insider_data.json")
     if not os.path.exists(file_name):
 
         endpoint = "https://api.sec-api.io/insider-trading"
@@ -518,7 +519,7 @@ def main():
     print(f"Ticker: {ticker_s}")
 
     # check if json file exists
-    filename = f"{ticker_s}_SEC.json"
+    filename = os.path.join(BACKEND_DIR, f"{ticker_s}_SEC.json")
     if os.path.exists(filename):
         print(f"Found existing file {filename}, exiting...")
         return
@@ -540,7 +541,7 @@ def main():
         # "insider_summary": insiders
     }
 
-    filename = f"{ticker_s}_SEC.json"
+    filename = os.path.join(BACKEND_DIR, f"{ticker_s}_SEC.json")
     with open(filename, "w") as f:
         json.dump(output, f, indent=4)
 

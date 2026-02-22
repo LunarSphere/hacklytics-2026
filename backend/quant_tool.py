@@ -8,6 +8,9 @@ import json
 import sec as sec_module
 import quant_metrics as qm
 
+### Example usage: python quant_tool.py --ticker TIO 
+
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # -------------------------
 # Databricks helpers
@@ -97,7 +100,7 @@ def run_pipeline(ticker_input: str):
     print(f"[INFO] CIK     : {cik}")
 
     # 2. Fetch SEC data (skip if JSON already exists)
-    sec_json_path = f"{ticker}_SEC.json"
+    sec_json_path = os.path.join(BACKEND_DIR, f"{ticker}_SEC.json")
     if os.path.exists(sec_json_path):
         print(f"[INFO] {sec_json_path} already exists — skipping SEC fetch.")
     else:
@@ -123,7 +126,7 @@ def run_pipeline(ticker_input: str):
         print(f"[INFO] Saved {sec_json_path}")
 
     # 3. Fetch insider data (hard-fail if sec_api key missing — checked at startup)
-    insider_json_path = f"{ticker}_insider_data.json"
+    insider_json_path = os.path.join(BACKEND_DIR, f"{ticker}_insider_data.json")
     if os.path.exists(insider_json_path):
         print(f"[INFO] {insider_json_path} already exists — skipping insider fetch.")
     else:

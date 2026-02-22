@@ -1,51 +1,162 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+"""
+Hacklytics 2026 — Backend API
+==============================
+
+Endpoints
+---------
+GET /health
+    Liveness check.
+
+GET /stocks/{ticker}
+    Runs the full SEC → metrics → Databricks pipeline for a single ticker.
+    Always re-computes (no cache).
+
+GET /report?tickers=AAPL,TSLA
+    Generates a formal LangChain / Gemini financial analysis report for one
+    or more comma-separated tickers.
+
+Deploy locally + expose via ngrok
+----------------------------------
+    uvicorn main:app --host 0.0.0.0 --port 5000 --reload
+    ngrok http 5000          # copy the https:// URL → frontend .env
+    # FastAPI interactive docs available at http://localhost:5000/docs
+"""
+
 import traceback
+from typing import Any, List, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 import quant_tool
 
-app = Flask(__name__)
-CORS(app)
+# langchainWorkflow is imported lazily inside get_report() so a missing
+# optional dep (e.g. python-dotenv, langchain_google_genai) doesn't prevent
+# the server from starting.
+
+# ---------------------------------------------------------------------------
+# App + CORS
+# ---------------------------------------------------------------------------
+
+app = FastAPI(
+    title="Hacklytics 2026 — Fraud Risk API",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-@app.route("/analyze", methods=["POST"])
-def analyze():
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
+
+class StockResponse(BaseModel):
+    ticker: str
+    company_name: Optional[str]
+    m_score: float
+    z_score: float
+    accruals_ratio: float
+    short_interest: Any          # nested dict from quant_metrics
+    insider_trading: Any         # nested dict from quant_metrics
+    composite_fraud_risk_score: float
+
+
+class ReportResponse(BaseModel):
+    tickers: List[str]
+    report_markdown: str
+
+
+class HealthResponse(BaseModel):
+    status: str
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.get("/health", response_model=HealthResponse, tags=["Meta"])
+def health():
+    """Liveness check."""
+    return HealthResponse(status="ok")
+
+
+@app.get(
+    "/stocks/{ticker}",
+    response_model=StockResponse,
+    tags=["Quant"],
+    summary="Run the full pipeline for a single ticker",
+)
+def get_stock(ticker: str):
     """
-    POST /analyze
-    Body: { "company": "Apple Inc." }
+    Runs SEC fetch → metrics calculation → Databricks upsert for **ticker**
+    and returns all computed fraud-risk metrics.
 
-    Returns the full fraud-risk metrics JSON for the given company.
+    - **ticker**: stock ticker symbol, e.g. `AAPL`
     """
-    body = request.get_json(silent=True) or {}
-    company_name = body.get("company", "").strip()
+    ticker = ticker.upper()
+    try:
+        resolved_ticker, company_name, results = quant_tool.run_pipeline(ticker)
+    except SystemExit:
+        raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found.")
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Pipeline failed — check server logs.")
 
-    if not company_name:
-        return jsonify({"error": "Missing 'company' field in request body."}), 400
+    return StockResponse(
+        ticker=resolved_ticker,
+        company_name=company_name,
+        m_score=results["m_score"],
+        z_score=results["z_score"],
+        accruals_ratio=results["accruals_ratio"],
+        short_interest=results.get("short_interest"),
+        insider_trading=results.get("insider_trading"),
+        composite_fraud_risk_score=results["composite_fraud_risk_score"],
+    )
+
+
+@app.get(
+    "/report",
+    response_model=ReportResponse,
+    tags=["Report"],
+    summary="Generate a LangChain / Gemini report for one or more tickers",
+)
+def get_report(
+    tickers: str = Query(
+        ...,
+        description="Comma-separated ticker symbols, e.g. `AAPL` or `AAPL,TSLA,NVDA`",
+        examples=["AAPL", "AAPL,TSLA"],
+    )
+):
+    """
+    Calls the LangChain multi-agent workflow to produce a formal markdown
+    report covering news sentiment and quantitative risk metrics.
+
+    - **tickers**: one or more comma-separated ticker symbols
+    """
+    ticker_list: List[str] = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not ticker_list:
+        raise HTTPException(status_code=400, detail="No valid tickers provided.")
 
     try:
-        ticker, results = quant_tool.run_pipeline(company_name)
-    except SystemExit:
-        return jsonify({"error": f"Company '{company_name}' not found."}), 404
-    except Exception as e:
+        import langchainWorkflow
+        report_md = langchainWorkflow.generate_report(ticker_list)
+    except Exception:
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail="Report generation failed — check server logs.")
 
-    return jsonify({
-        "ticker": ticker,
-        "company": company_name,
-        "m_score": results["m_score"],
-        "z_score": results["z_score"],
-        "accruals_ratio": results["accruals_ratio"],
-        "short_interest": results["short_interest"],
-        "insider_trading": results["insider_trading"],
-        "composite_fraud_risk_score": results["composite_fraud_risk_score"],
-    })
+    return ReportResponse(tickers=ticker_list, report_markdown=report_md)
 
 
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"})
-
+# ---------------------------------------------------------------------------
+# Entry-point (uvicorn main:app --reload  OR  python main.py)
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)

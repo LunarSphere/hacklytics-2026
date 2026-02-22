@@ -1,7 +1,10 @@
 import numpy as np
 import json
+import os
 from datetime import date
 import yfinance as yf
+
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 
 ### The goal of this python is to take the filtered SEC fillings and calculate the financial metrics for fraud detection.
 ### We will normalize each variable, weigh them and combine them into a single composite score 0 - 100
@@ -15,7 +18,7 @@ def load_data(ticker: str):
     current_year = date.today().year
 
     # open the companies SEC Filings data 
-    with open(f"{ticker}_SEC.json", "r") as f:
+    with open(os.path.join(BACKEND_DIR, f"{ticker}_SEC.json"), "r") as f:
         raw = json.load(f)
 
     company_info = {
@@ -255,7 +258,7 @@ def quant_metrics(ticker: str):
     z_score_value = Altman_Z_score(data_t, data_t1)
     accruals_ratio_value = Accruals_ratio(data_t)
     short_interest_value = short_interest(company_info['ticker'])
-    insider = insider_trading_activity(f"{company_info['ticker']}_insider_data.json", lookback_days=365)
+    insider = insider_trading_activity(os.path.join(BACKEND_DIR, f"{company_info['ticker']}_insider_data.json"), lookback_days=365)
 
     composite_score = normalize_and_combine_metrics(
         m_score_value, 
@@ -294,7 +297,7 @@ def main():
     print(f"Short Interest: {short_interest_value['signal']['label']} (Score: {short_interest_value['signal']['score']})")
 
     # --- Insider Trading Activity (Form 4) ---
-    insider = insider_trading_activity(f"{company_info['ticker']}_insider_data.json", lookback_days=365)
+    insider = insider_trading_activity(os.path.join(BACKEND_DIR, f"{company_info['ticker']}_insider_data.json"), lookback_days=365)
     print(f"Insider Trading Overall Ratio: {insider['overall_ratio']}")
     print(f"Insider Trading Individual Ratios: {insider['insider_ratios']}")
     print(f"Insider $ Sold: {insider['insider_sold_usd']}")
