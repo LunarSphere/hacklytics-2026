@@ -256,10 +256,10 @@ def make_call(body: CallRequest):
 
         call = twilio_client.calls.create(
             to=body.phone,
-            from_=os.environ.get("TWILIO_PHONE_NUMBER"),
+            from_=os.environ["TWILIO_PHONE_NUMBER"],
             twiml=xml  # pass TwiML inline instead of a callback URL
         )
-        return CallResponse(status="sent", sid=msg.sid)
+        return CallResponse(status="sent", sid=call.sid or "")
     except Exception:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Call failed — check server logs.")
