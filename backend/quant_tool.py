@@ -238,6 +238,31 @@ def read_user(cursor, phone: str):
     return {"phone": row[0], "name": row[1]}
 
 
+def get_fraud_score_for_ticker(cursor, ticker: str):
+    """Return the composite_fraud_risk_score for a ticker, or None if not found."""
+    cursor.execute(
+        "SELECT composite_fraud_risk_score FROM stocks WHERE UPPER(Ticker) = UPPER(:ticker) LIMIT 1",
+        parameters={"ticker": ticker.upper()},
+    )
+    row = cursor.fetchone()
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def get_users_holding_ticker(cursor, ticker: str) -> list:
+    """Return list of {phone, name} dicts for all users who hold *ticker* in their portfolio."""
+    cursor.execute(
+        """
+        SELECT u.phone, u.name
+        FROM user_portfolio up
+        JOIN users u ON up.phone = u.phone
+        WHERE UPPER(up.ticker) = UPPER(:ticker)
+        """,
+        parameters={"ticker": ticker.upper()},
+    )
+    rows = cursor.fetchall()
+    return [{"phone": r[0], "name": r[1]} for r in rows]
+
+
 def read_portfolio(cursor, phone: str) -> list:
     """Return portfolio entries with latest fraud + health scores from Databricks."""
     cursor.execute("""

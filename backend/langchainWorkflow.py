@@ -13,6 +13,7 @@ import os
 import json
 import requests
 import operator
+import concurrent.futures
 from typing import Annotated, TypedDict, Sequence, Literal
 from dotenv import load_dotenv
 from databricks import sql
@@ -55,15 +56,35 @@ if not GOOGLE_API_KEY:
 
 # ── LLM factory ──────────────────────────────────────────────────────────────
 
+LLM_TIMEOUT = 120  # seconds — hard deadline for each Gemini API call
+
 def get_llm(temperature: float = 0.0):
     """Return a Gemini chat model instance."""
     return ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
         temperature=temperature,
         google_api_key=GOOGLE_API_KEY,
-        timeout=120,            # HTTP request timeout in seconds
+        request_timeout=LLM_TIMEOUT,
         max_retries=2,
     )
+
+
+def _invoke_with_timeout(llm, messages, timeout: int = LLM_TIMEOUT):
+    """Invoke an LLM with a hard wall-clock timeout.
+
+    Raises ``TimeoutError`` if the call does not complete within *timeout* seconds,
+    which surfaces as a proper error rather than a silent hang.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(llm.invoke, messages)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise TimeoutError(
+                f"Gemini API call timed out after {timeout}s. "
+                "The model may be overloaded — try again."
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -96,8 +117,12 @@ def yahoo_news(ticker: str) -> list[str]:
         "X-RapidAPI-Host": "yahoo-finance15.p.rapidapi.com"
     }
 
-    response = requests.get(url, headers=headers, params=querystring)
-    data = response.json()
+    try:
+        response = requests.get(url, headers=headers, params=querystring, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        return [f"[error] Could not fetch Yahoo News for '{ticker}': {exc}"]
 
     articles = []
     headlines = []
@@ -315,7 +340,7 @@ def _build_sub_agent(
         iterations = state.get("tool_iterations", 0)
         print(f"  [sub-agent:{name}] Gemini call (tool iteration {iterations}/{MAX_TOOL_ITERATIONS})")
         messages = [SystemMessage(content=system_prompt)] + list(state["messages"])
-        response = llm.invoke(messages)
+        response = _invoke_with_timeout(llm, messages)
         return {"messages": [response]}
 
     def should_continue(state: AgentState) -> Literal["tools", "done"]:
@@ -501,7 +526,7 @@ def orchestrator_node(state: AgentState):
         print(f"[orchestrator] Gemini call (delegations so far: {count}/{MAX_DELEGATIONS})")
         messages = [SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT)] + list(state["messages"])
 
-    response = llm.invoke(messages)
+    response = _invoke_with_timeout(llm, messages)
     print(f"[orchestrator] Gemini responded. Response length: {len(extract_text(response.content))} chars")
     return {"messages": [response]}
 
@@ -656,12 +681,14 @@ def synthesize_node(state: AgentState):
     )
 
     messages = [SystemMessage(content=SYNTHESIZER_PROMPT)] + user_msgs + sub_agent_msgs
-    response = llm.invoke(messages)
+    print(f"[synthesizer] Invoking Gemini (timeout={LLM_TIMEOUT}s) ...")
+    response = _invoke_with_timeout(llm, messages)
     full_report = extract_text(response.content)
+    print(f"[synthesizer] Full report generated ({len(full_report)} chars)")
 
     # Second (cheap) LLM call: generate a 1-2 paragraph executive summary.
     print(f"[synthesizer] Gemini call — generating short summary")
-    summary_response = llm.invoke([
+    summary_response = _invoke_with_timeout(llm, [
         SystemMessage(content=(
             "Condense the following financial analysis report into a 1-2 paragraph "
             "executive summary. Keep it factual and data-driven. Do not add new "
@@ -670,6 +697,7 @@ def synthesize_node(state: AgentState):
         HumanMessage(content=full_report),
     ])
     summary = extract_text(summary_response.content)
+    print(f"[synthesizer] Summary generated ({len(summary)} chars)")
 
     # Pack both into a JSON string so downstream consumers get structured data.
     result_json = json.dumps({"report": full_report, "summary": summary})

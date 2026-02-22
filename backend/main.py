@@ -28,6 +28,7 @@ Deploy locally + expose via ngrok
 
 import os
 import traceback
+import threading
 from typing import Any, List, Optional
 
 import requests as http_requests
@@ -177,6 +178,22 @@ class UserResponse(BaseModel):
     avg_health_score: Optional[float] = None
 
 
+class AlertCallResult(BaseModel):
+    phone: str
+    name: str
+    status: str          # "sent" or "failed"
+    detail: Optional[str] = None
+
+
+class AlertResponse(BaseModel):
+    ticker: str
+    fraud_risk_score: float
+    credibility_score: float
+    alert_triggered: bool
+    users_notified: int
+    calls: List[AlertCallResult]
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -297,6 +314,9 @@ def get_stocks(
     for ticker in ticker_list:
         try:
             resolved_ticker, company_name, res = quant_tool.run_pipeline(ticker)
+            fraud_score = res.get("composite_fraud_risk_score")
+            if fraud_score is not None:
+                _maybe_alert(resolved_ticker, fraud_score)
             results.append(StockResponse(
                 ticker=resolved_ticker,
                 company_name=company_name,
@@ -339,6 +359,9 @@ def get_stock(ticker: str):
     ticker = ticker.upper()
     try:
         resolved_ticker, company_name, results = quant_tool.run_pipeline(ticker)
+        fraud_score = results.get("composite_fraud_risk_score")
+        if fraud_score is not None:
+            _maybe_alert(resolved_ticker, fraud_score)
         return StockResponse(
             ticker=resolved_ticker,
             company_name=company_name,
@@ -388,9 +411,13 @@ def get_report(
     try:
         import langchainWorkflow
         report_md = langchainWorkflow.generate_report(ticker_list)
-    except Exception:
+    except Exception as e:
+        print(f"Error generating report for tickers {ticker_list}: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Report generation failed — check server logs.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Report generation failed: {type(e).__name__}: {e}",
+        )
 
     report_text = report_md.get("report", "") if isinstance(report_md, dict) else str(report_md)
     return ReportResponse(tickers=ticker_list, report_markdown=report_text)
@@ -493,6 +520,171 @@ def get_health_score(ticker: str):
     except Exception:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Health score pipeline failed — check server logs.")
+
+
+# ---------------------------------------------------------------------------
+# Insecure-stock alert endpoint
+# ---------------------------------------------------------------------------
+
+FRAUD_ALERT_THRESHOLD = 85.0  # composite_fraud_risk_score > 85  →  credibility < 15 %
+
+
+def _maybe_alert(ticker: str, fraud_score: float) -> None:
+    """Fire-and-forget: if fraud_score > FRAUD_ALERT_THRESHOLD, call every
+    portfolio holder of *ticker* in a background thread so the API response
+    is never delayed.
+    """
+    if fraud_score <= FRAUD_ALERT_THRESHOLD:
+        return
+
+    def _run():
+        credibility = round(100.0 - fraud_score, 2)
+        message = (
+            f"Urgent alert from your portfolio monitor. "
+            f"Stock {ticker} is currently insecure — you should sell it now. "
+            f"Its fraud risk score is {round(fraud_score, 1)} out of 100, "
+            f"giving a credibility score of only {credibility} percent. "
+            f"Please review your portfolio immediately."
+        )
+        try:
+            conn = quant_tool.get_connection()
+            with conn.cursor() as cursor:
+                quant_tool.ensure_users_table(cursor)
+                quant_tool.ensure_portfolio_table(cursor)
+                holders = quant_tool.get_users_holding_ticker(cursor, ticker)
+            conn.close()
+        except Exception:
+            traceback.print_exc()
+            return
+
+        if not holders:
+            print(f"[alert] {ticker} fraud score {fraud_score} — no holders to notify.")
+            return
+
+        print(f"[alert] {ticker} fraud score {fraud_score} (credibility {credibility}%) — calling {len(holders)} holder(s)")
+        for user in holders:
+            phone, name = user["phone"], user["name"]
+            try:
+                _generate_voice(message)
+                audio_url = _upload_audio(AUDIO_FILE)
+                twilio_client = TwilioClient(
+                    os.environ["TWILIO_ACCOUNT_SID"],
+                    os.environ["TWILIO_AUTH_TOKEN"],
+                )
+                xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Play>{audio_url}</Play>
+</Response>"""
+                call = twilio_client.calls.create(
+                    to=phone,
+                    from_=os.environ["TWILIO_PHONE_NUMBER"],
+                    twiml=xml,
+                )
+                print(f"[alert] Called {name} ({phone}) re {ticker} — SID {call.sid}")
+            except Exception:
+                traceback.print_exc()
+                print(f"[alert] Failed to call {name} ({phone}) re {ticker}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+@app.post(
+    "/alert/{ticker}",
+    response_model=AlertResponse,
+    tags=["Voice"],
+    summary="Call all holders of a ticker if its credibility score is below 15 %",
+)
+def alert_insecure_stock(ticker: str):
+    """
+    Looks up the **composite_fraud_risk_score** for *ticker* in Databricks.
+    Credibility is defined as ``100 − fraud_risk_score``.
+
+    If credibility < 15 % (i.e. fraud score > 85), every registered user
+    who holds that ticker in their portfolio receives an automated voice
+    call warning them to sell.
+
+    Returns a summary of the alert including every call attempt.
+    """
+    ticker = ticker.upper()
+
+    # ── 1. Look up fraud score ────────────────────────────────────────────
+    try:
+        conn = quant_tool.get_connection()
+        with conn.cursor() as cursor:
+            quant_tool.ensure_users_table(cursor)
+            quant_tool.ensure_portfolio_table(cursor)
+            fraud_score = quant_tool.get_fraud_score_for_ticker(cursor, ticker)
+            if fraud_score is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No fraud-risk data found for '{ticker}'. Run /stocks?tickers={ticker} first.",
+                )
+            holders = quant_tool.get_users_holding_ticker(cursor, ticker)
+        conn.close()
+    except HTTPException:
+        raise
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Databricks query failed — check server logs.")
+
+    credibility = round(100.0 - fraud_score, 2)
+    alert_triggered = fraud_score > FRAUD_ALERT_THRESHOLD
+
+    call_results: List[AlertCallResult] = []
+
+    if not alert_triggered:
+        return AlertResponse(
+            ticker=ticker,
+            fraud_risk_score=round(fraud_score, 2),
+            credibility_score=credibility,
+            alert_triggered=False,
+            users_notified=0,
+            calls=[],
+        )
+
+    # ── 2. Call every holder ──────────────────────────────────────────────
+    message = (
+        f"Urgent alert from your portfolio monitor. "
+        f"Stock {ticker} is currently insecure — you should sell it now. "
+        f"Its fraud risk score is {round(fraud_score, 1)} out of 100, "
+        f"giving a credibility score of only {credibility} percent. "
+        f"Please review your portfolio immediately."
+    )
+
+    for user in holders:
+        phone = user["phone"]
+        name  = user["name"]
+        try:
+            _generate_voice(message)
+            audio_url = _upload_audio(AUDIO_FILE)
+            twilio_client = TwilioClient(
+                os.environ["TWILIO_ACCOUNT_SID"],
+                os.environ["TWILIO_AUTH_TOKEN"],
+            )
+            xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Play>{audio_url}</Play>
+</Response>"""
+            call = twilio_client.calls.create(
+                to=phone,
+                from_=os.environ["TWILIO_PHONE_NUMBER"],
+                twiml=xml,
+            )
+            print(f"[alert] Called {name} ({phone}) re {ticker} — SID {call.sid}")
+            call_results.append(AlertCallResult(phone=phone, name=name, status="sent", detail=call.sid))
+        except Exception as exc:
+            traceback.print_exc()
+            print(f"[alert] Failed to call {name} ({phone}): {exc}")
+            call_results.append(AlertCallResult(phone=phone, name=name, status="failed", detail=str(exc)))
+
+    return AlertResponse(
+        ticker=ticker,
+        fraud_risk_score=round(fraud_score, 2),
+        credibility_score=credibility,
+        alert_triggered=True,
+        users_notified=sum(1 for r in call_results if r.status == "sent"),
+        calls=call_results,
+    )
 
 
 # ---------------------------------------------------------------------------

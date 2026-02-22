@@ -50,8 +50,12 @@ def _fetch_prices(ticker: str):
         rf_raw = yf.download(RF_TICKER, period="5d", auto_adjust=True, progress=False)
         if rf_raw is None or rf_raw.empty:
             raise ValueError("No data returned for RF_TICKER")
-        rf_series  = rf_raw["Close"].dropna()
-        rf_annual  = float(rf_series.iloc[-1]) / 100
+        rf_col = rf_raw["Close"].dropna()
+        # Newer yfinance may return a DataFrame instead of a Series when the
+        # column is still MultiIndex — collapse to a plain 1-D Series first.
+        if hasattr(rf_col, "columns"):
+            rf_col = rf_col.iloc[:, 0].dropna()
+        rf_annual = float(rf_col.iloc[-1]) / 100
     except Exception:
         rf_annual = 0.04
 
