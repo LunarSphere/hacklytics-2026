@@ -276,8 +276,6 @@ def process_form4_insiders(ticker):
             "size": "50",
             "sort": [{ "filedAt": { "order": "desc" } }]
         }
-
-        print(os.environ.get("sec_api"))
         response = requests.post(endpoint, json=params, headers={"Authorization": os.environ.get("sec_api")})
         if response.status_code != 200:
             raise Exception(f"Form4 API error: {response.status_code} - {response.text}")
