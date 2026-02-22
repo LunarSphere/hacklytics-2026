@@ -29,11 +29,14 @@ Deploy locally + expose via ngrok
 import traceback
 from typing import Any, List, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import quant_tool
+
+load_dotenv()  # for Databricks credentials, but doesn't affect the rest of the server if .env is missing
 
 # langchainWorkflow is imported lazily inside get_report() so a missing
 # optional dep (e.g. python-dotenv, langchain_google_genai) doesn't prevent

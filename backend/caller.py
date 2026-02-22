@@ -2,16 +2,18 @@ import os
 import requests
 from flask import Flask, send_file, request, Response
 from twilio.rest import Client
-import keys
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 
-ELEVEN_API_KEY = keys.ELEVEN_API_KEY
-ELEVEN_VOICE_ID = keys.ELEVEN_VOICE_ID
-TWILIO_ACCOUNT_SID = keys.TWILIO_ACCOUNT_SID
-TWILIO_AUTH_TOKEN = keys.TWILIO_AUTH_TOKEN
-TWILIO_PHONE_FROM = keys.TWILIO_PHONE_NUMBER  # e.g. "+15551234567" (voice-capable number)
-PUBLIC_BASE_URL = keys.BASE_URL
+ELEVEN_API_KEY = os.environ["ELEVEN_API_KEY"]
+ELEVEN_VOICE_ID = os.environ["ELEVEN_VOICE_ID"]
+TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
+TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
+TWILIO_PHONE_FROM = os.environ["TWILIO_PHONE_NUMBER"]
+PUBLIC_BASE_URL = os.environ["BASE_URL"]
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 AUDIO_FILE = "speech.mp3"
@@ -36,7 +38,6 @@ def generate_voice(text):
 def serve_audio():
     return send_file(AUDIO_FILE, mimetype="audio/mpeg")
 
-# Twilio calls this URL when the call connects — it tells Twilio what to play
 @app.route("/twiml", methods=["GET", "POST"])
 def twiml():
     audio_url = f"{PUBLIC_BASE_URL}/audio"
