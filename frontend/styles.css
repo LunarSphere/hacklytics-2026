@@ -556,6 +556,10 @@ body {
   margin-bottom: 16px;
 }
 
+.fraud-heading {
+  margin-top: 4px;
+}
+
 .section-label {
   color: #7a7a84;
   font-family: "IBM Plex Mono", monospace;

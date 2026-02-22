@@ -691,7 +691,8 @@
         reportPromise.then(function (report) {
           if (report && report.report_markdown) {
             lastReportMarkdown = report.report_markdown;
-            lastReportSummary = report.summary || summarizeMarkdown(report.report_markdown, 420);
+            // Prefer backend-provided summary; fallback to a bounded markdown skim.
+            lastReportSummary = report.summary || summarizeMarkdown(report.report_markdown, 1200);
             reportSummaryText.textContent = lastReportSummary || "Report ready.";
             reportSummary.classList.remove("loading");
           } else {
@@ -791,22 +792,28 @@
 
     var card = document.createElement("div");
 
-    // Header row
-    var header = document.createElement("div");
-    header.className = "score-header";
-
+    // Top line: Ticker — Company
+    var nameLine = document.createElement("div");
+    nameLine.className = "score-header";
     var tickerLabel = document.createElement("span");
     tickerLabel.className = "section-label stock-ticker-label";
     tickerLabel.textContent = s.ticker + (s.company_name ? " \u2014 " + s.company_name : "");
+    nameLine.appendChild(tickerLabel);
+    card.appendChild(nameLine);
 
+    // Fraud risk heading
+    var fraudHeader = document.createElement("div");
+    fraudHeader.className = "score-header";
+    var fraudLabel = document.createElement("span");
+    fraudLabel.className = "section-label";
+    fraudLabel.textContent = "Fraud Risk";
     var sevLabel = document.createElement("span");
     sevLabel.className = "score-severity-label";
     sevLabel.textContent = label;
     sevLabel.style.color = color;
-
-    header.appendChild(tickerLabel);
-    header.appendChild(sevLabel);
-    card.appendChild(header);
+    fraudHeader.appendChild(fraudLabel);
+    fraudHeader.appendChild(sevLabel);
+    card.appendChild(fraudHeader);
 
     // Score display
     var scoreDisplay = document.createElement("div");
