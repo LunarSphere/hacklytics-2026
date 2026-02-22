@@ -34,7 +34,7 @@ import requests as http_requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from twilio.rest import Client as TwilioClient
@@ -167,6 +167,23 @@ def health():
 # Voice call helpers
 # ---------------------------------------------------------------------------
 
+AUDIO_FILE = "speech.mp3"
+
+@app.get("/audio")
+def serve_audio():
+    """Serve the generated MP3 to Twilio"""
+    return FileResponse(AUDIO_FILE, media_type="audio/mpeg")
+
+@app.get("/twiml")
+def twiml(phone: str):
+    """Return proper TwiML for Twilio to play the audio"""
+    audio_url = f"{os.environ['BASE_URL']}/audio"
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Play>{audio_url}</Play>
+</Response>"""
+    return Response(content=xml, media_type="text/xml")
+
 def _generate_voice(text: str, out_path: str = "speech.mp3") -> None:
     api_key = os.environ["ELEVEN_API_KEY"]
     voice_id = os.environ["ELEVEN_VOICE_ID"]
@@ -197,30 +214,30 @@ def _upload_audio(file_path: str) -> str:
     return url
 
 
-@app.post("/call", response_model=CallResponse, tags=["Voice"],
-          summary="Send a WhatsApp voice message to a phone number")
+@app.post("/call", response_model=CallResponse, tags=["Voice"])
 def make_call(body: CallRequest):
-    """
-    Generates an ElevenLabs TTS audio clip from **message**, uploads it to a
-    temporary public URL, then sends it as a WhatsApp media message via Twilio.
-
-    - **phone**: E.164 number, e.g. `+16143735308`
-    - **message**: text to speak
-    """
     try:
         _generate_voice(body.message)
-        audio_url = _upload_audio("speech.mp3")
+        audio_url = _upload_audio(AUDIO_FILE)
 
         twilio_client = TwilioClient(
             os.environ["TWILIO_ACCOUNT_SID"],
-            os.environ["TWILIO_AUTH_TOKEN"],
+            os.environ["TWILIO_AUTH_TOKEN"]
         )
-        msg = twilio_client.messages.create(
-            to=f"whatsapp:{body.phone}",
-            from_="whatsapp:+14155238886",
-            media_url=[audio_url],
+
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Play>{audio_url}</Play>
+</Response>"""
+
+        call = twilio_client.calls.create(
+            to=body.phone,
+            from_=os.environ.get("TWILIO_PHONE_NUMBER"),
+            twiml=xml  # pass TwiML inline instead of a callback URL
         )
-        return CallResponse(status="sent", sid=msg.sid)
+
+        return CallResponse(status="sent", sid=call.sid)
+
     except Exception:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Call failed — check server logs.")
@@ -468,4 +485,10 @@ app.mount("/", StaticFiles(directory="../frontend", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=5000,
+        reload=True,
+        http="httptools",
+    )
