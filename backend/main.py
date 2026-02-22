@@ -27,6 +27,7 @@ Deploy locally + expose via ngrok
 """
 
 import os
+import math
 import traceback
 import threading
 from typing import Any, List, Optional
@@ -314,7 +315,8 @@ def get_stocks(
     for ticker in ticker_list:
         try:
             resolved_ticker, company_name, res = quant_tool.run_pipeline(ticker)
-            fraud_score = res.get("composite_fraud_risk_score")
+            raw_fraud_score = res.get("composite_fraud_risk_score")
+            fraud_score = _transform_fraud_score(float(raw_fraud_score)) if raw_fraud_score is not None else None
             if fraud_score is not None:
                 _maybe_alert(resolved_ticker, fraud_score)
             results.append(StockResponse(
@@ -325,7 +327,7 @@ def get_stocks(
                 accruals_ratio=res.get("accruals_ratio"),
                 short_interest=res.get("short_interest"),
                 insider_trading=res.get("insider_trading"),
-                composite_fraud_risk_score=res.get("composite_fraud_risk_score"),
+                composite_fraud_risk_score=fraud_score,
             ))
         except (SystemExit, ValueError):
             errors.append(StockError(ticker=ticker, error="Ticker not found."))
@@ -359,7 +361,8 @@ def get_stock(ticker: str):
     ticker = ticker.upper()
     try:
         resolved_ticker, company_name, results = quant_tool.run_pipeline(ticker)
-        fraud_score = results.get("composite_fraud_risk_score")
+        raw_fraud_score = results.get("composite_fraud_risk_score")
+        fraud_score = _transform_fraud_score(float(raw_fraud_score)) if raw_fraud_score is not None else None
         if fraud_score is not None:
             _maybe_alert(resolved_ticker, fraud_score)
         return StockResponse(
@@ -370,7 +373,7 @@ def get_stock(ticker: str):
             accruals_ratio=results.get("accruals_ratio"),
             short_interest=results.get("short_interest"),
             insider_trading=results.get("insider_trading"),
-            composite_fraud_risk_score=results.get("composite_fraud_risk_score"),
+            composite_fraud_risk_score=fraud_score,
         )
     except (SystemExit, ValueError):
         raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found.")
@@ -526,7 +529,25 @@ def get_health_score(ticker: str):
 # Insecure-stock alert endpoint
 # ---------------------------------------------------------------------------
 
-FRAUD_ALERT_THRESHOLD = 85.0  # composite_fraud_risk_score > 85  →  credibility < 15 %
+FRAUD_ALERT_THRESHOLD = 70.0  # calibrated composite_fraud_risk_score > 70  →  trigger call alert
+
+
+def _transform_fraud_score(raw_score: float) -> float:
+    """Convert a raw 0-100 fraud score to a calibrated 0-100 score.
+
+    Steps:
+      1. Normalise to [0, 1]:  x = raw_score / 100
+      2. Apply piecewise curve:
+           if x < 0.56  →  (x + 0.4) ** 5
+           else         →  0.3 * ln(x) + 1
+      3. Re-scale to 0-100.
+    """
+    x = max(0.0, min(1.0, raw_score / 100.0))
+    if x < 0.56:
+        calibrated = (x + 0.4) ** 5
+    else:
+        calibrated = 0.3 * math.log(x) + 1
+    return round(calibrated * 100, 2)
 
 
 def _maybe_alert(ticker: str, fraud_score: float) -> None:
