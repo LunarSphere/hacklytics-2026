@@ -146,7 +146,8 @@ def run_pipeline(ticker_input: str):
     cursor = conn.cursor()
     try:
         ensure_table(cursor)
-        upsert_to_databricks(cursor, ticker, official_name, results)
+        
+        upsert_to_databricks(cursor, ticker, official_name or "", results)
     finally:
         cursor.close()
         conn.close()
