@@ -7,6 +7,10 @@ Endpoints
 GET /health
     Liveness check.
 
+GET /stocks?tickers=NVDA,AAPL,DE
+    Runs the pipeline for multiple tickers in one call. Returns a list
+    of results plus a summary of any tickers that failed.
+
 GET /stocks/{ticker}
     Runs the full SEC → metrics → Databricks pipeline for a single ticker.
     Always re-computes (no cache).
@@ -67,6 +71,16 @@ class StockResponse(BaseModel):
     composite_fraud_risk_score: float
 
 
+class StockError(BaseModel):
+    ticker: str
+    error: str
+
+
+class MultiStockResponse(BaseModel):
+    results: List[StockResponse]
+    errors: List[StockError]   # tickers that failed, with the reason
+
+
 class ReportResponse(BaseModel):
     tickers: List[str]
     report_markdown: str
@@ -84,6 +98,64 @@ class HealthResponse(BaseModel):
 def health():
     """Liveness check."""
     return HealthResponse(status="ok")
+
+
+@app.get(
+    "/stocks",
+    response_model=MultiStockResponse,
+    tags=["Quant"],
+    summary="Run the pipeline for multiple tickers in one call",
+)
+def get_stocks(
+    tickers: str = Query(
+        ...,
+        description="Comma-separated ticker symbols, e.g. `NVDA,AAPL,DE`",
+        examples=["NVDA,AAPL,DE"],
+    )
+):
+    """
+    Runs SEC fetch → metrics calculation → Databricks upsert for each ticker
+    in the comma-separated **tickers** query param.
+
+    Tickers that fail (not found, pipeline error) are collected in the
+    `errors` list so one bad ticker never blocks the rest.
+
+    - **tickers**: comma-separated ticker symbols, e.g. `NVDA,AAPL,DE`
+    """
+    ticker_list: List[str] = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not ticker_list:
+        raise HTTPException(status_code=400, detail="No valid tickers provided.")
+
+    results: List[StockResponse] = []
+    errors: List[StockError] = []
+
+    for ticker in ticker_list:
+        try:
+            resolved_ticker, company_name, res = quant_tool.run_pipeline(ticker)
+            results.append(StockResponse(
+                ticker=resolved_ticker,
+                company_name=company_name,
+                m_score=res["m_score"],
+                z_score=res["z_score"],
+                accruals_ratio=res["accruals_ratio"],
+                short_interest=res.get("short_interest"),
+                insider_trading=res.get("insider_trading"),
+                composite_fraud_risk_score=res["composite_fraud_risk_score"],
+            ))
+        except SystemExit:
+            errors.append(StockError(ticker=ticker, error="Ticker not found."))
+        except Exception as exc:
+            traceback.print_exc()
+            errors.append(StockError(ticker=ticker, error=str(exc)))
+
+    if not results and errors:
+        # Every ticker failed — return 422 so the frontend can surface the errors
+        raise HTTPException(
+            status_code=422,
+            detail=[e.dict() for e in errors],
+        )
+
+    return MultiStockResponse(results=results, errors=errors)
 
 
 @app.get(
