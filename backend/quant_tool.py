@@ -83,6 +83,188 @@ def upsert_to_databricks(cursor, ticker: str, company_name: str, results: dict):
 
 
 # -------------------------
+# Stock Health helpers
+# -------------------------
+
+def ensure_health_table(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS stock_health (
+            Ticker                       STRING,
+            sharpe                       DOUBLE,
+            sortino                      DOUBLE,
+            alpha                        DOUBLE,
+            beta                         DOUBLE,
+            var_95                       DOUBLE,
+            cvar_95                      DOUBLE,
+            max_drawdown                 DOUBLE,
+            volatility                   DOUBLE,
+            composite_stock_health_score DOUBLE,
+            last_updated                 TIMESTAMP
+        )
+    """)
+
+
+def upsert_health_to_databricks(cursor, ticker: str, health: dict):
+    merge_sql = """
+        MERGE INTO stock_health AS t
+        USING (
+            SELECT
+                :ticker                       AS Ticker,
+                :sharpe                       AS sharpe,
+                :sortino                      AS sortino,
+                :alpha                        AS alpha,
+                :beta                         AS beta,
+                :var_95                       AS var_95,
+                :cvar_95                      AS cvar_95,
+                :max_drawdown                 AS max_drawdown,
+                :volatility                   AS volatility,
+                :composite_stock_health_score AS composite_stock_health_score,
+                current_timestamp()           AS last_updated
+        ) AS s
+        ON t.Ticker = s.Ticker
+
+        WHEN MATCHED AND t.last_updated < current_timestamp() - INTERVAL 1 DAY THEN
+            UPDATE SET
+                t.sharpe                       = s.sharpe,
+                t.sortino                      = s.sortino,
+                t.alpha                        = s.alpha,
+                t.beta                         = s.beta,
+                t.var_95                       = s.var_95,
+                t.cvar_95                      = s.cvar_95,
+                t.max_drawdown                 = s.max_drawdown,
+                t.volatility                   = s.volatility,
+                t.composite_stock_health_score = s.composite_stock_health_score,
+                t.last_updated                 = s.last_updated
+
+        WHEN NOT MATCHED THEN
+            INSERT (Ticker, sharpe, sortino, alpha, beta, var_95, cvar_95,
+                    max_drawdown, volatility, composite_stock_health_score, last_updated)
+            VALUES (s.Ticker, s.sharpe, s.sortino, s.alpha, s.beta, s.var_95, s.cvar_95,
+                    s.max_drawdown, s.volatility, s.composite_stock_health_score, s.last_updated)
+    """
+    cursor.execute(merge_sql, parameters={
+        "ticker":                       ticker,
+        "sharpe":                       health["sharpe"],
+        "sortino":                      health["sortino"],
+        "alpha":                        health["alpha"],
+        "beta":                         health["beta"],
+        "var_95":                       health["var_95"],
+        "cvar_95":                      health["cvar_95"],
+        "max_drawdown":                 health["max_drawdown"],
+        "volatility":                   health["volatility"],
+        "composite_stock_health_score": health["composite_stock_health_score"],
+    })
+    if cursor.rowcount == 0:
+        print(f"[WARN] stock_health row for {ticker} is already up-to-date. Skipping write.")
+    else:
+        print(f"[OK] Upserted {ticker} into stock_health table.")
+
+
+def upsert_health_to_databricks_safe(ticker: str, health: dict):
+    """Self-contained wrapper: opens its own Databricks connection, upserts, closes.
+    Intended for callers (e.g. main.py endpoints) that don't hold an open cursor.
+    Silently logs errors instead of raising so a DB outage never kills an API response.
+    """
+    try:
+        conn = get_connection()
+        with conn.cursor() as cursor:
+            ensure_health_table(cursor)
+            upsert_health_to_databricks(cursor, ticker, health)
+        conn.close()
+    except Exception as exc:
+        print(f"[WARN] Could not persist health metrics for {ticker} to Databricks: {exc}")
+
+
+# -------------------------
+# User + Portfolio helpers
+# -------------------------
+
+def ensure_users_table(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            phone      STRING,
+            name       STRING,
+            created_at TIMESTAMP
+        )
+    """)
+
+
+def ensure_portfolio_table(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_portfolio (
+            phone    STRING,
+            ticker   STRING,
+            added_at TIMESTAMP
+        )
+    """)
+
+
+def upsert_user(cursor, phone: str, name: str):
+    """Insert user if not exists (idempotent — never overwrites name)."""
+    cursor.execute("""
+        MERGE INTO users AS t
+        USING (SELECT :phone AS phone, :name AS name) AS s
+        ON t.phone = s.phone
+        WHEN NOT MATCHED THEN
+            INSERT (phone, name, created_at)
+            VALUES (s.phone, s.name, current_timestamp())
+    """, parameters={"phone": phone, "name": name})
+    print(f"[OK] User {phone} registered (or already existed).")
+
+
+def add_to_portfolio(cursor, phone: str, tickers: list):
+    """Add tickers to a user's portfolio — duplicates silently ignored."""
+    for ticker in tickers:
+        cursor.execute("""
+            MERGE INTO user_portfolio AS t
+            USING (SELECT :phone AS phone, :ticker AS ticker) AS s
+            ON t.phone = s.phone AND t.ticker = s.ticker
+            WHEN NOT MATCHED THEN
+                INSERT (phone, ticker, added_at)
+                VALUES (s.phone, s.ticker, current_timestamp())
+        """, parameters={"phone": phone, "ticker": ticker.upper()})
+    print(f"[OK] Added {len(tickers)} ticker(s) to portfolio for {phone}.")
+
+
+def read_user(cursor, phone: str):
+    """Return user record dict or None if not found."""
+    cursor.execute(
+        "SELECT phone, name FROM users WHERE phone = :phone",
+        parameters={"phone": phone},
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {"phone": row[0], "name": row[1]}
+
+
+def read_portfolio(cursor, phone: str) -> list:
+    """Return portfolio entries with latest fraud + health scores from Databricks."""
+    cursor.execute("""
+        SELECT
+            up.ticker,
+            s.composite_fraud_risk_score,
+            sh.composite_stock_health_score,
+            COALESCE(s.last_updated, sh.last_updated) AS last_updated
+        FROM user_portfolio up
+        LEFT JOIN stocks       s  ON up.ticker = s.Ticker
+        LEFT JOIN stock_health sh ON up.ticker = sh.Ticker
+        WHERE up.phone = :phone
+        ORDER BY up.added_at
+    """, parameters={"phone": phone})
+    rows = cursor.fetchall()
+    return [
+        {
+            "ticker":                       r[0],
+            "composite_fraud_risk_score":   r[1],
+            "composite_stock_health_score": r[2],
+            "last_updated":                 str(r[3]) if r[3] else None,
+        }
+        for r in rows
+    ]
+
+
+# -------------------------
 # Pipeline
 # -------------------------
 

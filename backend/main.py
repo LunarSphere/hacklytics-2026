@@ -35,6 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import quant_tool
+import stock_health
 
 load_dotenv()  # for Databricks credentials, but doesn't affect the rest of the server if .env is missing
 
@@ -66,12 +67,23 @@ app.add_middleware(
 class StockResponse(BaseModel):
     ticker: str
     company_name: Optional[str]
+    # --- Fraud / accounting risk (from SEC + quant_metrics) ---
     m_score: float
     z_score: float
     accruals_ratio: float
     short_interest: Any          # nested dict from quant_metrics
     insider_trading: Any         # nested dict from quant_metrics
     composite_fraud_risk_score: float
+    # --- Performance / market risk (from yfinance via stock_health) ---
+    sharpe: Optional[float] = None
+    sortino: Optional[float] = None
+    alpha: Optional[float] = None
+    beta: Optional[float] = None
+    var_95: Optional[float] = None
+    cvar_95: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    volatility: Optional[float] = None
+    composite_stock_health_score: Optional[float] = None
 
 
 class StockError(BaseModel):
@@ -87,10 +99,48 @@ class MultiStockResponse(BaseModel):
 class ReportResponse(BaseModel):
     tickers: List[str]
     report_markdown: str
+    summary: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
     status: str
+
+
+class StockHealthResponse(BaseModel):
+    ticker: str
+    sharpe: float
+    sortino: float
+    alpha: float
+    beta: float
+    var_95: float
+    cvar_95: float
+    max_drawdown: float
+    volatility: float
+    composite_stock_health_score: float
+
+
+class CreateUserRequest(BaseModel):
+    phone: str
+    name: str
+
+
+class UserPortfolioRequest(BaseModel):
+    tickers: List[str]
+
+
+class PortfolioEntry(BaseModel):
+    ticker: str
+    composite_fraud_risk_score: Optional[float]
+    composite_stock_health_score: Optional[float]
+    last_updated: Optional[str]
+
+
+class UserResponse(BaseModel):
+    phone: str
+    name: str
+    portfolio: List[PortfolioEntry]
+    avg_fraud_score: Optional[float]
+    avg_health_score: Optional[float]
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +185,12 @@ def get_stocks(
     for ticker in ticker_list:
         try:
             resolved_ticker, company_name, res = quant_tool.run_pipeline(ticker)
+            h: dict = {}
+            try:
+                h = stock_health.compute_health(resolved_ticker)
+                quant_tool.upsert_health_to_databricks_safe(resolved_ticker, h)
+            except Exception:
+                traceback.print_exc()
             results.append(StockResponse(
                 ticker=resolved_ticker,
                 company_name=company_name,
@@ -144,6 +200,15 @@ def get_stocks(
                 short_interest=res.get("short_interest"),
                 insider_trading=res.get("insider_trading"),
                 composite_fraud_risk_score=res["composite_fraud_risk_score"],
+                sharpe=h.get("sharpe"),
+                sortino=h.get("sortino"),
+                alpha=h.get("alpha"),
+                beta=h.get("beta"),
+                var_95=h.get("var_95"),
+                cvar_95=h.get("cvar_95"),
+                max_drawdown=h.get("max_drawdown"),
+                volatility=h.get("volatility"),
+                composite_stock_health_score=h.get("composite_stock_health_score"),
             ))
         except SystemExit:
             errors.append(StockError(ticker=ticker, error="Ticker not found."))
@@ -183,6 +248,14 @@ def get_stock(ticker: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Pipeline failed — check server logs.")
 
+    # Compute health metrics — non-fatal if yfinance/network fails
+    health: dict = {}
+    try:
+        health = stock_health.compute_health(resolved_ticker)
+        quant_tool.upsert_health_to_databricks_safe(resolved_ticker, health)
+    except Exception:
+        traceback.print_exc()
+
     return StockResponse(
         ticker=resolved_ticker,
         company_name=company_name,
@@ -192,6 +265,15 @@ def get_stock(ticker: str):
         short_interest=results.get("short_interest"),
         insider_trading=results.get("insider_trading"),
         composite_fraud_risk_score=results["composite_fraud_risk_score"],
+        sharpe=health.get("sharpe"),
+        sortino=health.get("sortino"),
+        alpha=health.get("alpha"),
+        beta=health.get("beta"),
+        var_95=health.get("var_95"),
+        cvar_95=health.get("cvar_95"),
+        max_drawdown=health.get("max_drawdown"),
+        volatility=health.get("volatility"),
+        composite_stock_health_score=health.get("composite_stock_health_score"),
     )
 
 
@@ -225,7 +307,169 @@ def get_report(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Report generation failed — check server logs.")
 
-    return ReportResponse(tickers=ticker_list, report_markdown=report_md)
+    report_text = report_md.get("report", "") if isinstance(report_md, dict) else str(report_md)
+    summary_text = report_md.get("summary") if isinstance(report_md, dict) else None
+    return ReportResponse(tickers=ticker_list, report_markdown=report_text, summary=summary_text)
+
+
+# ---------------------------------------------------------------------------
+# Health Score
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/health-score/{ticker}",
+    response_model=StockHealthResponse,
+    tags=["Health"],
+    summary="Compute performance & risk metrics for a single ticker",
+)
+def get_health_score(ticker: str):
+    """
+    Downloads 1 year of daily prices via yfinance (free) and computes:
+    Sharpe, Sortino, Alpha, Beta, VaR 95%, CVaR 95%, Max Drawdown, Volatility,
+    and a weighted **composite_stock_health_score** (0–100).
+
+    Results are upserted to the **stock_health** Databricks table.
+    """
+    ticker = ticker.upper()
+    try:
+        health = stock_health.compute_health(ticker)
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Health score computation failed — check server logs.")
+
+    try:
+        conn   = quant_tool.get_connection()
+        cursor = conn.cursor()
+        try:
+            quant_tool.ensure_health_table(cursor)
+            quant_tool.upsert_health_to_databricks(cursor, ticker, health)
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception:
+        traceback.print_exc()  # non-fatal — return metrics even if DB write fails
+
+    return StockHealthResponse(**health)
+
+
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/users",
+    status_code=201,
+    tags=["Users"],
+    summary="Register a new user",
+)
+def create_user(body: CreateUserRequest):
+    """
+    Creates a user record keyed by **phone number**.
+    If the phone already exists the record is left unchanged (idempotent).
+    """
+    try:
+        conn   = quant_tool.get_connection()
+        cursor = conn.cursor()
+        try:
+            quant_tool.ensure_users_table(cursor)
+            quant_tool.upsert_user(cursor, body.phone, body.name)
+        finally:
+            cursor.close()
+            conn.close()
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Failed to register user.")
+
+    return {"phone": body.phone, "name": body.name}
+
+
+@app.post(
+    "/users/{phone}/portfolio",
+    status_code=201,
+    tags=["Users"],
+    summary="Add tickers to a user's portfolio",
+)
+def add_to_portfolio(phone: str, body: UserPortfolioRequest):
+    """
+    Adds one or more tickers to the user's portfolio.
+    Duplicate entries are silently ignored (idempotent per ticker).
+
+    - **phone**: user's phone number
+    - **body.tickers**: list of ticker symbols, e.g. `["AAPL", "NVDA"]`
+    """
+    if not body.tickers:
+        raise HTTPException(status_code=400, detail="tickers list must not be empty.")
+
+    tickers = [t.strip().upper() for t in body.tickers if t.strip()]
+
+    try:
+        conn   = quant_tool.get_connection()
+        cursor = conn.cursor()
+        try:
+            quant_tool.ensure_users_table(cursor)
+            quant_tool.ensure_portfolio_table(cursor)
+            user = quant_tool.read_user(cursor, phone)
+            if not user:
+                raise HTTPException(status_code=404, detail=f"User '{phone}' not found.")
+            quant_tool.add_to_portfolio(cursor, phone, tickers)
+        finally:
+            cursor.close()
+            conn.close()
+    except HTTPException:
+        raise
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Failed to update portfolio.")
+
+    return {"phone": phone, "tickers_added": tickers}
+
+
+@app.get(
+    "/users/{phone}",
+    response_model=UserResponse,
+    tags=["Users"],
+    summary="Get a user with their portfolio and average scores",
+)
+def get_user(phone: str):
+    """
+    Returns the user record and every ticker in their portfolio.
+    Each entry includes the latest **composite_fraud_risk_score** and
+    **composite_stock_health_score** from Databricks (null if the ticker
+    hasn't been analysed yet).
+
+    **avg_fraud_score** and **avg_health_score** are computed live,
+    excluding tickers with no data yet.
+    """
+    try:
+        conn   = quant_tool.get_connection()
+        cursor = conn.cursor()
+        try:
+            quant_tool.ensure_users_table(cursor)
+            quant_tool.ensure_portfolio_table(cursor)
+            quant_tool.ensure_health_table(cursor)
+            user = quant_tool.read_user(cursor, phone)
+            if not user:
+                raise HTTPException(status_code=404, detail=f"User '{phone}' not found.")
+            portfolio = quant_tool.read_portfolio(cursor, phone)
+        finally:
+            cursor.close()
+            conn.close()
+    except HTTPException:
+        raise
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Failed to fetch user data.")
+
+    fraud_scores  = [e["composite_fraud_risk_score"]   for e in portfolio if e["composite_fraud_risk_score"]   is not None]
+    health_scores = [e["composite_stock_health_score"] for e in portfolio if e["composite_stock_health_score"] is not None]
+
+    return UserResponse(
+        phone=user["phone"],
+        name=user["name"],
+        portfolio=[PortfolioEntry(**e) for e in portfolio],
+        avg_fraud_score=round(sum(fraud_scores)   / len(fraud_scores),  2) if fraud_scores  else None,
+        avg_health_score=round(sum(health_scores) / len(health_scores), 2) if health_scores else None,
+    )
 
 
 # ---------------------------------------------------------------------------
