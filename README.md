@@ -1,4 +1,4 @@
-#Fraudit
+# Fraudit
 
 ## Inspiration
 Fraudit is a platform for democratizing investing for retail investors. Hedge funds have teams of analysts that scrape news outlets, historical stock prices, and SEC filings to create reports about the stock market. Our platform orchestrates a multi-agent system to analyze SEC fraud, overall stock health, and public sentiment to generate market reports that rival hedge funds. 
