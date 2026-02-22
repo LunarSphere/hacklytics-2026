@@ -46,6 +46,7 @@ def M_score(data_t, data_t1):
         data_t["gross_profit"] = data_t["revenue"] - data_t["cogs"] if data_t["cogs"] is not None else 0
     if data_t1["gross_profit"] is None:
         data_t1["gross_profit"] = data_t1["revenue"] - data_t1["cogs"] if data_t1["cogs"] is not None else 0
+    
 
     DSRI = (data_t["net_receivables"] / data_t["revenue"]) / (data_t1["net_receivables"] / data_t1["revenue"]) if data_t1["revenue"] != 0 else 0
     GMI = ((data_t1["revenue"] - data_t1["cogs"]) / data_t1["revenue"]) / ((data_t["revenue"] - data_t["cogs"]) / data_t["revenue"]) if data_t1["revenue"] != 0 and data_t["revenue"] != 0 else 0
@@ -68,11 +69,20 @@ def Altman_Z_score(data_t, data_t1):
     Jargon: sales == revenue, 
     For large companies where market cap can be 12x liablities this can cause the zscore to be a massive outlier. 
     """
-    X1 = (data_t["current_assets"] - data_t["current_liabilities"]) / data_t["total_assets"] if data_t["total_assets"] != 0 else 0
-    X2 = data_t["retained_earnings"] / data_t["total_assets"] if data_t["total_assets"] != 0 else 0
-    X3 = data_t["ebit"] / data_t["total_assets"] if data_t["total_assets"] != 0 else 0
-    X4 = (data_t["market_equity"]) / data_t["liabilities"] if data_t["liabilities"] != 0 else 0
-    X5 = data_t["revenue"] / data_t["total_assets"] if data_t["total_assets"] != 0 else 0
+    current_assets = data_t["current_assets"] or 0
+    current_liabilities = data_t["current_liabilities"] or 0
+    total_assets = data_t["total_assets"] or 0
+    retained_earnings = data_t["retained_earnings"] or 0
+    ebit = data_t["ebit"] or 0
+    market_equity = data_t["market_equity"] or 0
+    liabilities = data_t["liabilities"] or 0
+    revenue = data_t["revenue"] or 0
+
+    X1 = (current_assets - current_liabilities) / total_assets if total_assets != 0 else 0
+    X2 = retained_earnings / total_assets if total_assets != 0 else 0
+    X3 = ebit / total_assets if total_assets != 0 else 0
+    X4 = market_equity / liabilities if liabilities != 0 else 0
+    X5 = revenue / total_assets if total_assets != 0 else 0
     z_score = 1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5
     return z_score
 
@@ -87,7 +97,9 @@ def Accruals_ratio(data_t):
         0.10 - 0.25 : Caution
         > 0.25 : Red flag — earnings disconnected from cash
     """
-    accruals = (data_t["net_income_loss"] - data_t["cash_from_ops"]) if data_t["cash_from_ops"] else 0
+    net_income_loss = data_t["net_income_loss"] or 0
+    cash_from_ops = data_t["cash_from_ops"] or 0
+    accruals = net_income_loss - cash_from_ops
     accruals_ratio = accruals / data_t["total_assets"] if data_t["total_assets"] != 0 else 0
     return accruals_ratio
 

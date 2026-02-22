@@ -86,6 +86,10 @@ def run_pipeline(company_name: str):
     if not cik:
         print(f"[ERROR] Company '{company_name}' not found in tickers.json.")
         sys.exit(1)
+    if ticker is None:
+        print(f"[ERROR] No ticker found for company '{company_name}'.")
+        sys.exit(1)
+    ticker = str(ticker)
     
     print(f"[INFO] Company : {official_name}")
     print(f"[INFO] Ticker  : {ticker}")
