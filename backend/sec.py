@@ -5,7 +5,6 @@ import sys
 from datetime import datetime, timedelta
 import yfinance as yf
 import xml.etree.ElementTree as ET
-import keys
 # -------------------------
 # SEC headers and URLs
 # -------------------------
@@ -23,26 +22,209 @@ BASE_URL = "https://data.sec.gov/submissions/"
 # -------------------------
 # GAAP Tag Fallback Dictionary
 # -------------------------
+# GAAP_TAGS = {
+#     "net_receivables": ["AccountsReceivableNetCurrent", "AccountsReceivableNetTradeCurrent"],
+#     "cogs": ["CostOfGoodsAndServicesSold"],
+#     "current_assets": ["AssetsCurrent"],
+#     "ppe": ["PropertyPlantAndEquipmentNet"],
+#     "securities": ["AvailableForSaleSecuritiesCurrent", "MarketableSecuritiesCurrent"],
+#     "total_assets": ["Assets"],
+#     "depreciation": ["DepreciationDepletionAndAmortization", "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment"],
+#     "sg&a": ["SellingGeneralAndAdministrativeExpense"],
+#     "current_liabilities": ["LiabilitiesCurrent"],
+#     "long_term_debt": ["LongTermDebtNoncurrent", "LongTermDebt"],
+#     "income_continuing_ops": ["IncomeLossFromContinuingOperations", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"], #pretax
+#     "cash_from_ops": ["NetCashProvidedByUsedInOperatingActivities"],
+#     "retained_earnings": ["RetainedEarningsAccumulatedDeficit"],
+#     "gross_profit": ["GrossProfit"],
+#     "revenue": ["Revenues", "SalesRevenueNet", "SalesRevenueServicesNet", "RevenueFromContractWithCustomerExcludingAssessedTax"],
+#     "ebit": ["EarningsBeforeInterestAndTaxes", "OperatingIncomeLoss"],
+#     "liabilities": ["Liabilities"],
+#     "net_income_loss": ["NetIncomeLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"]
+#     # Market value of equity will require external stock price and shares outstanding
+# }
+
 GAAP_TAGS = {
-    "net_receivables": ["AccountsReceivableNetCurrent", "AccountsReceivableNetTradeCurrent"],
-    "cogs": ["CostOfGoodsAndServicesSold"],
-    "current_assets": ["AssetsCurrent"],
-    "ppe": ["PropertyPlantAndEquipmentNet"],
-    "securities": ["AvailableForSaleSecuritiesCurrent", "MarketableSecuritiesCurrent"],
-    "total_assets": ["Assets"],
-    "depreciation": ["DepreciationDepletionAndAmortization", "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment"],
-    "sg&a": ["SellingGeneralAndAdministrativeExpense"],
-    "current_liabilities": ["LiabilitiesCurrent"],
-    "long_term_debt": ["LongTermDebtNoncurrent", "LongTermDebt"],
-    "income_continuing_ops": ["IncomeLossFromContinuingOperations", "IncomeLossFromContinuingOperationsBeforeIncomeTaxes", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"], #pretax
-    "cash_from_ops": ["NetCashProvidedByUsedInOperatingActivities"],
-    "retained_earnings": ["RetainedEarningsAccumulatedDeficit"],
-    "gross_profit": ["GrossProfit"],
-    "revenue": ["Revenues", "SalesRevenueNet", "SalesRevenueServicesNet", "RevenueFromContractWithCustomerExcludingAssessedTax"],
-    "ebit": ["EarningsBeforeInterestAndTaxes", "OperatingIncomeLoss"],
-    "liabilities": ["Liabilities"],
-    "net_income_loss": ["NetIncomeLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"]
-    # Market value of equity will require external stock price and shares outstanding
+
+    "net_receivables": [
+        "AccountsReceivableNetCurrent",                          # most common
+        "ReceivablesNetCurrent",                                 # older filers
+        "AccountsReceivableNet",                                 # some variations
+        "AccountsReceivableNetTradeCurrent",
+        "TradeAndOtherReceivablesNetCurrent",
+        "AccountsNotesAndLoansReceivableNetCurrent",
+        "NotesAndAccountsReceivableNet",
+    ],
+
+    "cogs": [
+        "CostOfGoodsAndServicesSold",                           # post-2018 standard
+        "CostOfRevenue",                                         # tech/service companies
+        "CostOfGoodsSold",                                       # older manufacturing
+        "CostOfSales",                                           # retail common
+        "CostOfGoodsAndServiceExcludingDepreciationDepletionAndAmortization",
+        "CostOfGoodsSoldExcludingDepreciationDepletionAndAmortization",
+        "CostsAndExpenses",                                      # last resort — broad
+    ],
+
+    "current_assets": [
+        "AssetsCurrent",                                         # universal
+        "AssetsTotalCurrent",                                    # rare variant
+    ],
+
+    "ppe": [
+        "PropertyPlantAndEquipmentNet",                          # most common
+        "PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization",  # post-ASC 842
+        "PropertyPlantAndEquipmentNetIncludingFinanceLeases",
+        "PropertyPlantAndEquipmentAndRightOfUseAssetAfterAccumulatedDepreciationAndAmortization",
+        "PropertyAndEquipmentNet",                               # smaller filers
+    ],
+
+    "securities": [
+        "AvailableForSaleSecuritiesCurrent",                     # pre-ASU 2016
+        "MarketableSecuritiesCurrent",                           # tech companies (Apple)
+        "ShortTermInvestments",                                  # very common alternative
+        "AvailableForSaleSecuritiesDebtSecuritiesCurrent",       # post-ASU 2016
+        "TradingSecuritiesCurrent",
+        "InvestmentsFairValueDisclosure",
+        "EquitySecuritiesFvNiCurrent",                           # post-ASU 2016 equity
+        "DebtSecuritiesAvailableForSaleCurrent",
+    ],
+
+    "total_assets": [
+        "Assets",                                                # universal — this never changes
+    ],
+
+    "depreciation": [
+        "DepreciationDepletionAndAmortization",                  # most common in CF statement
+        "DepreciationAndAmortization",                           # income statement version
+        "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment",
+        "Depreciation",                                          # pure depreciation no amortization
+        "DepreciationAmortizationAndAccretionNet",
+        "CostDepletionDepreciationAndAmortization",
+        "AmortizationOfIntangibleAssets",                        # if D&A split out
+        "DepreciationNonproduction",
+    ],
+
+    "sg&a": [
+        "SellingGeneralAndAdministrativeExpense",                # most common
+        "GeneralAndAdministrativeExpense",                       # G&A only (no selling)
+        "SellingAndMarketingExpense",                            # selling only
+        "SellingExpense",
+        "OperatingExpenses",                                     # broad fallback — use with caution
+        "OtherCostAndExpenseOperating",
+        "SellingGeneralAndAdministrativeExpenseExcludingDepreciation",
+        "NoninterestExpense",                                    # banking equivalent
+    ],
+
+    "current_liabilities": [
+        "LiabilitiesCurrent",                                    # universal
+        "LiabilitiesTotalCurrent",                               # rare variant
+    ],
+
+    "long_term_debt": [
+        "LongTermDebtNoncurrent",                                # most common
+        "LongTermDebt",                                          # includes current portion
+        "LongTermDebtAndCapitalLeaseObligations",                # pre-ASC 842
+        "LongTermDebtAndFinanceLeaseLiability",                  # post-ASC 842
+        "LongTermNotesPayable",
+        "SeniorLongTermNotes",
+        "LongTermLineOfCredit",
+        "ConvertibleLongTermNotesPayable",
+        "LongTermDebtNoncurrentExcludingRelatedParties",
+        "FinanceLeaseLiabilityNoncurrent",                       # lease obligations
+        "OperatingLeaseLiabilityNoncurrent",                     # post-ASC 842
+    ],
+
+    "income_continuing_ops": [                                   # PRETAX — critical for TATA
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",  # most accurate
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxes",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesDomestic",
+        "IncomeLossFromContinuingOperations",                    # after-tax fallback
+        "ProfitLoss",                                            # IFRS filers
+    ],
+
+    "cash_from_ops": [
+        "NetCashProvidedByUsedInOperatingActivities",            # most common
+        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+        "CashGeneratedFromOperations",                           # rare
+        "NetCashFromOperatingActivities",
+    ],
+
+    "retained_earnings": [
+        "RetainedEarningsAccumulatedDeficit",                    # most common — covers both positive and negative
+        "RetainedEarnings",                                      # always profitable companies
+        "AccumulatedDeficit",                                    # loss companies
+        "RetainedEarningsUnappropriated",
+    ],
+
+    "gross_profit": [
+        "GrossProfit",                                           # universal
+        "GrossProfitLoss",                                       # rare variant
+    ],
+
+    "revenue": [
+        "RevenueFromContractWithCustomerExcludingAssessedTax",   # 2019–present (ASC 606)
+        "RevenueFromContractWithCustomerIncludingAssessedTax",   # with sales tax included
+        "Revenues",                                              # 2018 transition year
+        "SalesRevenueNet",                                       # pre-2018
+        "SalesRevenueGoodsNet",                                  # goods only pre-2018
+        "SalesRevenueServicesNet",                               # services only pre-2018
+        "RevenueFromContractWithCustomer",
+        "RevenuesNetOfInterestExpense",                          # banking
+        "InterestAndDividendIncomeOperating",                    # banking alternative
+        "NetInvestmentIncome",                                   # insurance/investment cos
+        "PremiumsEarnedNet",                                     # insurance
+        "HealthCareOrganizationRevenue",                         # healthcare
+        "RealEstateRevenueNet",                                  # REITs
+        "OilAndGasRevenue",                                      # energy sector
+        "RevenueFromRelatedParties",                             # don't use — related party only
+    ],
+
+    "ebit": [
+        "OperatingIncomeLoss",                                   # most common and reliable
+        "EarningsBeforeInterestAndTaxes",                        # rare direct tag
+        "IncomeLossFromContinuingOperationsBeforeInterestExpenseInterestIncomeIncomeTaxesExtraordinaryItemsNoncontrollingInterestsNet",
+        "OperatingIncomeLossFromContinuingOperations",
+        "IncomeLossFromOperations",
+        "OperatingIncome",
+    ],
+
+    "liabilities": [
+        "Liabilities",                                           # universal total liabilities
+        "LiabilitiesAndStockholdersEquity",                      # do NOT use — this equals total assets
+    ],
+
+    "net_income_loss": [
+        "NetIncomeLoss",                                         # most common
+        "NetIncomeLossAvailableToCommonStockholdersBasic",       # after preferred dividends
+        "NetIncomeLossAvailableToCommonStockholdersDiluted",
+        "ProfitLoss",                                            # includes minority interest
+        "NetIncomeLossAttributableToParent",
+        "IncomeLossFromContinuingOperations",                    # excludes discontinued ops
+        "ComprehensiveIncomeNetOfTax",                           # do NOT use for M-score — too broad
+    ],
+
+    # --- NEW FIELD from Ratmono et al. 2020 ---
+    "roa_net_income": [                                          # for ΔROA calculation
+        "NetIncomeLoss",                                         # same as net_income_loss
+        "ProfitLoss",
+    ],
+
+    # --- SHARES OUTSTANDING (for market cap calculation) ---
+    "shares_outstanding": [
+        "CommonStockSharesOutstanding",                          # most common
+        "EntityCommonStockSharesOutstanding",                    # DEI namespace not us-gaap
+        "CommonStockSharesOutstandingIncludingTreasuryShares",
+        "SharesOutstanding",
+    ],
+
+    # --- INCOME TAX (useful for deriving pretax from net income if needed) ---
+    "income_tax_expense": [
+        "IncomeTaxExpenseBenefit",                               # most common
+        "CurrentIncomeTaxExpenseBenefit",
+        "IncomeTaxesPaidNet",                                    # cash basis fallback
+    ],
 }
 
 # -------------------------
@@ -78,7 +260,7 @@ def process_form4_insiders(ticker):
             "sort": [{ "filedAt": { "order": "desc" } }]
         }
 
-        response = requests.post(endpoint, json=params, headers={"Authorization": keys.FORM4_API_KEY})
+        response = requests.post(endpoint, json=params, headers={"Authorization": os.environ.get("sec_api")})
         if response.status_code != 200:
             raise Exception(f"Form4 API error: {response.status_code} - {response.text}")
         
@@ -196,6 +378,7 @@ def process_block(submissions_json, state):
     primary_docs = filings.get("primaryDocument", [])
 
     current_year = datetime.today().year
+    target_years = {current_year - 4, current_year - 5} # default is - 1 and -2 
     one_year_ago = datetime.today() - timedelta(days=365)
 
     for form, date_str, accession, doc in zip(forms, filing_dates, accession_numbers, primary_docs):
@@ -214,7 +397,7 @@ def process_block(submissions_json, state):
 
         # ---- 10-K ----
         if form == "10-K":
-            if filing_year not in [f["year"] for f in state["10K"]]:
+            if filing_year in target_years and filing_year not in [f["year"] for f in state["10K"]]:
                 state["10K"].append({"year": filing_year, **filing_entry})
 
         # ---- 8-K ----
@@ -326,7 +509,7 @@ def main():
 
     filings = get_required_filings(cik)
     filings = enrich_with_metrics(cik, filings, ticker_s)
-    insiders = process_form4_insiders(ticker_s)
+    # insiders = process_form4_insiders(ticker_s)
 
     output = {
         "company": official_name,
@@ -338,7 +521,7 @@ def main():
         ]],
         "all_8K_until_1yr_back": filings["8K"],
         "Form4_this_year_only": filings["Form4"],
-        "insider_summary": insiders
+        # "insider_summary": insiders
     }
 
     filename = f"{ticker_s}_SEC.json"
