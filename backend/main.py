@@ -153,6 +153,30 @@ class HealthResponse(BaseModel):
     status: str
 
 
+class CreateUserRequest(BaseModel):
+    phone: str
+    name: str
+
+
+class UserPortfolioRequest(BaseModel):
+    tickers: List[str]
+
+
+class PortfolioEntry(BaseModel):
+    ticker: str
+    composite_fraud_risk_score: Optional[float] = None
+    composite_stock_health_score: Optional[float] = None
+    last_updated: Optional[str] = None
+
+
+class UserResponse(BaseModel):
+    phone: str
+    name: str
+    portfolio: List[PortfolioEntry]
+    avg_fraud_score: Optional[float] = None
+    avg_health_score: Optional[float] = None
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -235,9 +259,7 @@ def make_call(body: CallRequest):
             from_=os.environ.get("TWILIO_PHONE_NUMBER"),
             twiml=xml  # pass TwiML inline instead of a callback URL
         )
-
-        return CallResponse(status="sent", sid=call.sid)
-
+        return CallResponse(status="sent", sid=msg.sid)
     except Exception:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Call failed — check server logs.")
@@ -370,7 +392,8 @@ def get_report(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Report generation failed — check server logs.")
 
-    return ReportResponse(tickers=ticker_list, report_markdown=report_md)
+    report_text = report_md.get("report", "") if isinstance(report_md, dict) else str(report_md)
+    return ReportResponse(tickers=ticker_list, report_markdown=report_text)
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +493,84 @@ def get_health_score(ticker: str):
     except Exception:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Health score pipeline failed — check server logs.")
+
+
+# ---------------------------------------------------------------------------
+# User + Portfolio endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/users", tags=["Users"], summary="Register a new user")
+def create_user(body: CreateUserRequest):
+    """
+    Create a new user identified by **phone** number.
+    Idempotent — calling again with the same phone never overwrites the name.
+    """
+    try:
+        conn = quant_tool.get_connection()
+        with conn.cursor() as cursor:
+            quant_tool.ensure_users_table(cursor)
+            quant_tool.upsert_user(cursor, body.phone, body.name)
+        conn.close()
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Could not register user — check server logs.")
+    return {"phone": body.phone, "name": body.name}
+
+
+@app.post("/users/{phone}/portfolio", tags=["Users"], summary="Add tickers to a user's portfolio")
+def add_to_portfolio(phone: str, body: UserPortfolioRequest):
+    """
+    Add one or more tickers to the portfolio of the user identified by **phone**.
+    Duplicate tickers are silently ignored.
+    """
+    if not body.tickers:
+        raise HTTPException(status_code=400, detail="No tickers provided.")
+    try:
+        conn = quant_tool.get_connection()
+        with conn.cursor() as cursor:
+            quant_tool.ensure_portfolio_table(cursor)
+            quant_tool.add_to_portfolio(cursor, phone, body.tickers)
+        conn.close()
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Could not update portfolio — check server logs.")
+    return {"phone": phone, "tickers_added": [t.upper() for t in body.tickers]}
+
+
+@app.get("/users/{phone}", response_model=UserResponse, tags=["Users"], summary="Get a user and their portfolio")
+def get_user(phone: str):
+    """
+    Fetch user profile and their portfolio with the latest fraud + health scores
+    for each ticker pulled from Databricks.
+    Also returns **avg_fraud_score** and **avg_health_score** across the portfolio.
+    """
+    try:
+        conn = quant_tool.get_connection()
+        with conn.cursor() as cursor:
+            quant_tool.ensure_users_table(cursor)
+            quant_tool.ensure_portfolio_table(cursor)
+            user = quant_tool.read_user(cursor, phone)
+            if not user:
+                raise HTTPException(status_code=404, detail=f"User '{phone}' not found.")
+            portfolio_rows = quant_tool.read_portfolio(cursor, phone)
+        conn.close()
+    except HTTPException:
+        raise
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Could not fetch user — check server logs.")
+
+    portfolio = [PortfolioEntry(**row) for row in portfolio_rows]
+    fraud_scores  = [p.composite_fraud_risk_score  for p in portfolio if p.composite_fraud_risk_score  is not None]
+    health_scores = [p.composite_stock_health_score for p in portfolio if p.composite_stock_health_score is not None]
+
+    return UserResponse(
+        phone=user["phone"],
+        name=user["name"],
+        portfolio=portfolio,
+        avg_fraud_score=round(sum(fraud_scores)  / len(fraud_scores),  2) if fraud_scores  else None,
+        avg_health_score=round(sum(health_scores) / len(health_scores), 2) if health_scores else None,
+    )
 
 
 # ---------------------------------------------------------------------------

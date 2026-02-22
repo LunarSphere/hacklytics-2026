@@ -181,12 +181,12 @@ def compute_health(ticker: str) -> dict:
     -------
     {
         "ticker":                       str,
-        "sharpe":                       float,   # annualised
-        "sortino":                      float,   # annualised
-        "alpha":                        float,   # vs S&P 500 (annual)
-        "beta":                         float,   # vs S&P 500
-        "var_95":                       float,   # daily positive decimal
-        "cvar_95":                      float,   # daily positive decimal
+        "sharpe":                       float,   # annualised compare invest return vs risk
+        "sortino":                      float,   # annualised version of Sharpe that penalises downside volatility only
+        "alpha":                        float,   # vs S&P 500 (annual) measure of active return on investment — how much did it beat/fall short of CAPM expected return?
+        "beta":                         float,   # vs S&P 500 measure of volatility/risk — how much does it move vs market?
+        "var_95":                       float,   # daily positive decimal value at risk (max expected loss at 95% confidence)
+        "cvar_95":                      float,   # daily positive decimal 
         "max_drawdown":                 float,   # peak-to-trough [0, 1]
         "volatility":                   float,   # annualised std of returns
         "composite_stock_health_score": float,   # 0–100
