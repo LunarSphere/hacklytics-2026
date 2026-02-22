@@ -40,6 +40,7 @@ from pydantic import BaseModel
 from twilio.rest import Client as TwilioClient
 
 import quant_tool
+import stock_health
 
 load_dotenv()  # for Databricks credentials, but doesn't affect the rest of the server if .env is missing
 
@@ -113,6 +114,29 @@ class MultiStockResponse(BaseModel):
 class ReportResponse(BaseModel):
     tickers: List[str]
     report_markdown: str
+
+
+class HealthScoreResponse(BaseModel):
+    ticker: str
+    sharpe: Optional[float]
+    sortino: Optional[float]
+    alpha: Optional[float]
+    beta: Optional[float]
+    var_95: Optional[float]
+    cvar_95: Optional[float]
+    max_drawdown: Optional[float]
+    volatility: Optional[float]
+    composite_stock_health_score: Optional[float]
+
+
+class HealthScoreError(BaseModel):
+    ticker: str
+    error: str
+
+
+class MultiHealthScoreResponse(BaseModel):
+    results: List[HealthScoreResponse]
+    errors: List[HealthScoreError]
 
 
 class CallRequest(BaseModel):
@@ -324,6 +348,105 @@ def get_report(
         raise HTTPException(status_code=500, detail="Report generation failed — check server logs.")
 
     return ReportResponse(tickers=ticker_list, report_markdown=report_md)
+
+
+# ---------------------------------------------------------------------------
+# Stock health endpoints
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/health-score",
+    response_model=MultiHealthScoreResponse,
+    tags=["Health"],
+    summary="Run the health-score pipeline for multiple tickers in one call",
+)
+def get_health_scores(
+    tickers: str = Query(
+        ...,
+        description="Comma-separated ticker symbols, e.g. `NVDA,AAPL,DELL`",
+        examples=["NVDA,AAPL,DELL"],
+    )
+):
+    """
+    Computes stock-health metrics (Sharpe, Sortino, Alpha, Beta, VaR, CVaR,
+    Max Drawdown, Volatility, Composite Score) for each ticker in the
+    comma-separated **tickers** query param.
+
+    Tickers that fail (not found, no price data) are collected in the
+    `errors` list so one bad ticker never blocks the rest.
+
+    - **tickers**: comma-separated ticker symbols, e.g. `NVDA,AAPL,DELL`
+    """
+    ticker_list: List[str] = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not ticker_list:
+        raise HTTPException(status_code=400, detail="No valid tickers provided.")
+
+    results: List[HealthScoreResponse] = []
+    errors: List[HealthScoreError] = []
+
+    for ticker in ticker_list:
+        try:
+            res = stock_health.compute_health(ticker)
+            results.append(HealthScoreResponse(
+                ticker=res["ticker"],
+                sharpe=res.get("sharpe"),
+                sortino=res.get("sortino"),
+                alpha=res.get("alpha"),
+                beta=res.get("beta"),
+                var_95=res.get("var_95"),
+                cvar_95=res.get("cvar_95"),
+                max_drawdown=res.get("max_drawdown"),
+                volatility=res.get("volatility"),
+                composite_stock_health_score=res.get("composite_stock_health_score"),
+            ))
+        except (SystemExit, ValueError):
+            errors.append(HealthScoreError(ticker=ticker, error="Ticker not found."))
+        except Exception as exc:
+            traceback.print_exc()
+            errors.append(HealthScoreError(ticker=ticker, error=str(exc)))
+
+    if not results and errors:
+        raise HTTPException(
+            status_code=422,
+            detail=[e.dict() for e in errors],
+        )
+
+    return MultiHealthScoreResponse(results=results, errors=errors)
+
+
+@app.get(
+    "/health-score/{ticker}",
+    response_model=HealthScoreResponse,
+    tags=["Health"],
+    summary="Run the health-score pipeline for a single ticker",
+)
+def get_health_score(ticker: str):
+    """
+    Computes stock-health metrics for **ticker** and returns all computed
+    performance and risk metrics.
+
+    - **ticker**: stock ticker symbol, e.g. `AAPL`
+    """
+    ticker = ticker.upper()
+    try:
+        res = stock_health.compute_health(ticker)
+        return HealthScoreResponse(
+            ticker=res["ticker"],
+            sharpe=res.get("sharpe"),
+            sortino=res.get("sortino"),
+            alpha=res.get("alpha"),
+            beta=res.get("beta"),
+            var_95=res.get("var_95"),
+            cvar_95=res.get("cvar_95"),
+            max_drawdown=res.get("max_drawdown"),
+            volatility=res.get("volatility"),
+            composite_stock_health_score=res.get("composite_stock_health_score"),
+        )
+    except (SystemExit, ValueError):
+        raise HTTPException(status_code=404, detail=f"Ticker '{ticker}' not found.")
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Health score pipeline failed — check server logs.")
 
 
 # ---------------------------------------------------------------------------
