@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fraud Risk Analysis</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <canvas id="bg-canvas"></canvas>
+
+  <div class="app-root">
+    <div class="content-wrapper">
+
+      <!-- Header -->
+      <header class="header">
+        <div class="header-label">Fraud Risk Analysis</div>
+        <h1 class="header-title">Evaluate corporate fraud risk</h1>
+        <p class="header-desc">
+          Enter ticker symbols to generate a risk assessment based on
+          financial statement analysis, governance indicators, and
+          historical patterns.
+        </p>
+      </header>
+
+      <!-- Ticker Input -->
+      <section class="input-section">
+        <div class="input-label-row">
+          <label for="ticker-input" class="input-label">Ticker Symbols</label>
+          <span id="ticker-count" class="ticker-count"></span>
+        </div>
+
+        <div class="textarea-wrap">
+          <textarea
+            id="ticker-input"
+            placeholder="NVDA, MSFT, AAPL, TSLA"
+            rows="2"
+          ></textarea>
+        </div>
+
+        <div id="ticker-chips" class="ticker-chips"></div>
+
+        <button id="analyze-btn" class="analyze-btn" disabled>
+          <div id="progress-fill" class="progress-fill"></div>
+          <span id="btn-label" class="btn-label">Run Analysis</span>
+        </button>
+
+        <div id="shortcut-hint" class="shortcut-hint">or press Ctrl+Enter</div>
+      </section>
+
+      <!-- Loading Skeleton -->
+      <section id="skeleton-section" class="results-divider" style="display:none;">
+        <div class="skeleton-wrap">
+          <div class="skeleton-score-block">
+            <div class="skeleton-row-between">
+              <div class="skeleton-bar" style="width:112px;height:12px;"></div>
+              <div class="skeleton-bar" style="width:64px;height:12px;"></div>
+            </div>
+            <div class="skeleton-score-row">
+              <div class="skeleton-bar" style="width:96px;height:56px;"></div>
+              <div class="skeleton-bar skeleton-dim" style="width:40px;height:20px;margin-bottom:8px;"></div>
+            </div>
+            <div class="skeleton-bar" style="width:100%;height:4px;"></div>
+          </div>
+          <div class="skeleton-divider"></div>
+          <div class="skeleton-summary-block">
+            <div class="skeleton-bar" style="width:64px;height:12px;margin-bottom:12px;"></div>
+            <div class="skeleton-lines">
+              <div class="skeleton-bar skeleton-dim" style="width:100%;height:12px;"></div>
+              <div class="skeleton-bar skeleton-dim" style="width:100%;height:12px;"></div>
+              <div class="skeleton-bar skeleton-dim" style="width:75%;height:12px;"></div>
+            </div>
+          </div>
+          <div class="skeleton-factors-block">
+            <div class="skeleton-bar" style="width:128px;height:12px;margin-bottom:12px;"></div>
+            <div class="skeleton-factor-lines">
+              <div class="skeleton-factor-line"></div>
+              <div class="skeleton-factor-line"></div>
+              <div class="skeleton-factor-line"></div>
+              <div class="skeleton-factor-line"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Results -->
+      <section id="results-section" class="results-area" style="display:none;">
+
+        <!-- Per-stock cards rendered by JS -->
+        <div id="stock-cards-container"></div>
+
+        <!-- Download + Disclaimer -->
+        <div class="results-divider" id="summary-block">
+          <!-- Download -->
+          <button id="download-btn" class="download-btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span id="download-label">Download full report</span>
+          </button>
+
+          <!-- Disclaimer -->
+          <p class="disclaimer">
+            This analysis is generated using publicly available data and heuristic
+            models. It is not financial or legal advice. Verify all findings
+            independently.
+          </p>
+        </div>
+      </section>
+
+      <!-- Footer -->
+      <footer class="app-footer">
+        <span>v0.1.0</span>
+        <span>Not financial advice</span>
+      </footer>
+
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
