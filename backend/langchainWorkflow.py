@@ -11,6 +11,7 @@ Each sub-agent can be extended with custom tools below.
 
 import os
 import json
+import math
 import requests
 import operator
 import concurrent.futures
@@ -25,6 +26,24 @@ from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+def transform_fraud_score(raw_score: float) -> float:
+    """Convert a raw 0-100 fraud score to a calibrated 0-100 score.
+
+    Steps:
+      1. Normalise to [0, 1]:  x = raw_score / 100
+      2. Apply piecewise curve:
+           if x < 0.56  →  (x + 0.4) ** 5
+           else         →  0.3 * ln(x) + 1
+      3. Re-scale to 0-100.
+    """
+    x = max(0.0, min(1.0, raw_score / 100.0))
+    if x < 0.56:
+        calibrated = (x + 0.4) ** 5
+    else:
+        calibrated = 0.3 * math.log(x) + 1
+    return round(calibrated * 100, 2)
+
 
 def extract_text(content) -> str:
     """Extract plain text from Gemini message content.
@@ -201,12 +220,19 @@ def compute_fraud_scores(ticker: str) -> str:
             print(f"  [DEBUG:compute_fraud_scores] No row found for ticker '{ticker.upper()}'")
             return f"No fraud-score data found in the database for ticker '{ticker}'."
 
+        raw_fraud_score = row[4]
+        if raw_fraud_score is not None:
+            calibrated_score = transform_fraud_score(float(raw_fraud_score))
+            print(f"  [DEBUG:compute_fraud_scores] Raw fraud score: {raw_fraud_score} → Calibrated: {calibrated_score}")
+        else:
+            calibrated_score = None
+
         result = (
             f"Fraud / Risk Metrics for {row[0]}:\n"
             f"  Beneish M-Score:              {row[1]}\n"
             f"  Altman Z-Score:               {row[2]}\n"
             f"  Accruals Ratio:               {row[3]}\n"
-            f"  Composite Fraud Risk Score:   {row[4]}"
+            f"  Composite Fraud Risk Score:   {calibrated_score}"
         )
         print(f"  [DEBUG:compute_fraud_scores] Returning result:\n{result}")
         return result
