@@ -277,7 +277,7 @@ response as a FORMAL REPORT (without any DELEGATE token).
 
 FORMAL REPORT FORMAT:
 - Title: "Financial Analysis Report" (list all companies/tickers covered).
-- Date: Include today's date.
+- Do NOT include a date unless a sub-agent explicitly provided one.
 - If multiple companies: organise the report with a top-level section per
   company, each containing the relevant sub-sections.
 - Numbered sub-headings per company:
@@ -286,7 +286,7 @@ FORMAL REPORT FORMAT:
   Omit sub-sections for which no sub-agent data exists.
 - After all per-company sections, include:
     - Comparative Summary (if multiple companies): side-by-side comparison.
-    - Conclusion & Outlook: clear, actionable bottom-line assessment.
+    - Conclusion: a concise summary based strictly on the sub-agent data above.
 - Use markdown formatting throughout.
 
 ABSOLUTE DATA-INTEGRITY RULES (NEVER VIOLATE THESE):
@@ -392,12 +392,12 @@ def synthesize_node(state: AgentState):
             "REPORT using ONLY the data the sub-agents returned.\n\n"
             "FORMAL REPORT FORMAT:\n"
             "- Title: 'Financial Analysis Report' (list all companies/tickers).\n"
-            "- Date: Include today's date.\n"
+            "- Do NOT include a date unless a sub-agent explicitly provided one.\n"
             "- If multiple companies: organise per company with sub-sections.\n"
             "- Sub-headings: 1. News Sentiment Analysis, 2. Quantitative Risk "
             "  Metrics. Omit sections with no data.\n"
             "- Comparative Summary (if multiple companies).\n"
-            "- Conclusion & Outlook.\n"
+            "- Conclusion: summarise strictly from sub-agent data.\n"
             "- Use markdown formatting.\n\n"
             "ABSOLUTE DATA-INTEGRITY RULES (NEVER VIOLATE):\n"
             "- The report must contain ONLY information from sub-agent responses.\n"
