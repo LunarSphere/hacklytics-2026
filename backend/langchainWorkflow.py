@@ -496,7 +496,23 @@ def synthesize_node(state: AgentState):
         + user_msgs + sub_agent_msgs
     )
     response = llm.invoke(messages)
-    return {"messages": [response]}
+    full_report = extract_text(response.content)
+
+    # Second (cheap) LLM call: generate a 1-2 paragraph executive summary.
+    print(f"[synthesizer] Gemini call — generating short summary")
+    summary_response = llm.invoke([
+        SystemMessage(content=(
+            "Condense the following financial analysis report into a 1-2 paragraph "
+            "executive summary. Keep it factual and data-driven. Do not add new "
+            "information — only summarise what is in the report."
+        )),
+        HumanMessage(content=full_report),
+    ])
+    summary = extract_text(summary_response.content)
+
+    # Pack both into a JSON string so downstream consumers get structured data.
+    result_json = json.dumps({"report": full_report, "summary": summary})
+    return {"messages": [AIMessage(content=result_json)]}
 
 
 # ── Wire the orchestrator graph ──────────────────────────────────────────────
@@ -534,25 +550,35 @@ app = orchestrator_graph.compile()
 # CONVENIENCE  HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def chat(user_input: str, history: list[BaseMessage] | None = None) -> str:
-    """Send a message and return the assistant's final text reply.
+def chat(user_input: str, history: list[BaseMessage] | None = None) -> dict:
+    """Send a message and return the assistant's final response.
 
     Args:
         user_input: The user's message.
         history:    Optional prior messages for multi-turn conversations.
 
     Returns:
-        The assistant's response string.
+        A dict with keys ``report`` (full markdown) and ``summary`` (1-2 paragraphs).
+        Falls back to ``{"report": <raw text>, "summary": ""}`` if JSON parsing fails.
     """
     messages = list(history) if history else []
     messages.append(HumanMessage(content=user_input))
 
     result = app.invoke({"messages": messages, "delegation_count": 0, "tool_iterations": 0})
-    # Return the last AI message content.
+    # Find the last AI message (the synthesizer's JSON output).
+    raw = ""
     for msg in reversed(result["messages"]):
         if isinstance(msg, AIMessage) and not getattr(msg, "name", None):
-            return extract_text(msg.content)
-    return extract_text(result["messages"][-1].content)
+            raw = extract_text(msg.content)
+            break
+    if not raw:
+        raw = extract_text(result["messages"][-1].content)
+
+    # Parse the JSON envelope.
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {"report": raw, "summary": ""}
 
 
 def stream_chat(user_input: str, history: list[BaseMessage] | None = None):
@@ -573,7 +599,7 @@ def stream_chat(user_input: str, history: list[BaseMessage] | None = None):
 # CLI  (quick test)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def generate_report(stock_inputs: list[str]) -> str:
+def generate_report(stock_inputs: list[str]) -> dict:
     """Generate a formal financial analysis report for one or more stocks.
 
     Args:
@@ -581,7 +607,7 @@ def generate_report(stock_inputs: list[str]) -> str:
                       names (e.g. ['Nvidia', 'Apple']) or a mix of both.
 
     Returns:
-        The formal report as a markdown string.
+        A dict with keys ``report`` (full markdown) and ``summary`` (1-2 paragraphs).
     """
     stocks_str = ", ".join(stock_inputs)
     prompt = (
@@ -628,8 +654,16 @@ if __name__ == "__main__":
     print("Please wait — gathering data from sub-agents...\n")
     print("=" * 60)
 
-    report = generate_report(stocks)
-    print(report)
+    result = generate_report(stocks)
+
+    print("\n📋 SUMMARY")
+    print("-" * 60)
+    print(result.get("summary", "(no summary available)"))
+
+    print("\n" + "=" * 60)
+    print("📄 FULL REPORT")
+    print("=" * 60)
+    print(result.get("report", "(no report available)"))
 
     print("\n" + "=" * 60)
     print("Report complete.")
