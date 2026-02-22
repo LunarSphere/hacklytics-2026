@@ -51,6 +51,14 @@ load_dotenv()  # for Databricks credentials, but doesn't affect the rest of the 
 # the server from starting.
 
 # ---------------------------------------------------------------------------
+# Report cache  (in-memory, keyed by sorted ticker tuple)
+# ---------------------------------------------------------------------------
+
+# Maps tuple(sorted ticker list) → cached report_markdown string.
+# Cleared only on server restart.  Use DELETE /report/cache to bust manually.
+_report_cache: dict[tuple, str] = {}
+
+# ---------------------------------------------------------------------------
 # App + CORS
 # ---------------------------------------------------------------------------
 
@@ -364,6 +372,7 @@ def get_stock(ticker: str):
         raw_fraud_score = results.get("composite_fraud_risk_score")
         fraud_score = _transform_fraud_score(float(raw_fraud_score)) if raw_fraud_score is not None else None
         if fraud_score is not None:
+            print("Ticker:", resolved_ticker, "Raw fraud score:", raw_fraud_score, "Calibrated fraud score:", fraud_score)
             _maybe_alert(resolved_ticker, fraud_score)
         return StockResponse(
             ticker=resolved_ticker,
@@ -411,6 +420,12 @@ def get_report(
     if not ticker_list:
         raise HTTPException(status_code=400, detail="No valid tickers provided.")
 
+    cache_key = tuple(sorted(ticker_list))
+    if cache_key in _report_cache:
+        print(f"[report cache] HIT for {cache_key} — returning cached report")
+        return ReportResponse(tickers=ticker_list, report_markdown=_report_cache[cache_key])
+
+    print(f"[report cache] MISS for {cache_key} — generating report")
     try:
         import langchainWorkflow
         report_md = langchainWorkflow.generate_report(ticker_list)
@@ -423,7 +438,32 @@ def get_report(
         )
 
     report_text = report_md.get("report", "") if isinstance(report_md, dict) else str(report_md)
+    _report_cache[cache_key] = report_text
+    print(f"[report cache] Stored report for {cache_key} ({len(report_text)} chars)")
     return ReportResponse(tickers=ticker_list, report_markdown=report_text)
+
+
+@app.delete(
+    "/report/cache",
+    tags=["Report"],
+    summary="Clear the in-memory report cache",
+)
+def clear_report_cache(
+    tickers: Optional[str] = Query(
+        None,
+        description="Optional comma-separated tickers to evict. Omit to clear the entire cache.",
+    )
+):
+    """Delete cached reports.  Omit *tickers* to wipe everything, or pass a
+    comma-separated list to evict only specific ticker sets."""
+    if tickers:
+        ticker_list = tuple(sorted(t.strip().upper() for t in tickers.split(",") if t.strip()))
+        removed = _report_cache.pop(ticker_list, None) is not None
+        return {"cleared": removed, "key": list(ticker_list)}
+    count = len(_report_cache)
+    _report_cache.clear()
+    print(f"[report cache] Cleared all {count} cached report(s)")
+    return {"cleared": True, "entries_removed": count}
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +625,7 @@ def _maybe_alert(ticker: str, fraud_score: float) -> None:
         print(f"[alert] {ticker} fraud score {fraud_score} (credibility {credibility}%) — calling {len(holders)} holder(s)")
         for user in holders:
             phone, name = user["phone"], user["name"]
+            print(f"CALLING {phone}")
             try:
                 _generate_voice(message)
                 audio_url = _upload_audio(AUDIO_FILE)
