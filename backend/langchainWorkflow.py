@@ -15,6 +15,7 @@ import requests
 import operator
 from typing import Annotated, TypedDict, Sequence, Literal
 from dotenv import load_dotenv
+from databricks import sql
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage, ToolMessage
@@ -47,6 +48,7 @@ def extract_text(content) -> str:
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 YAHOO_API_KEY = os.getenv("YAHOO_API_KEY")
+DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN")      # personal access token
 
 if not GOOGLE_API_KEY:
     raise EnvironmentError("GOOGLE_API_KEY not found. Set it in the .env file.")
@@ -59,6 +61,8 @@ def get_llm(temperature: float = 0.0):
         model="gemini-2.5-flash",
         temperature=temperature,
         google_api_key=GOOGLE_API_KEY,
+        timeout=120,            # HTTP request timeout in seconds
+        max_retries=2,
     )
 
 
@@ -109,19 +113,64 @@ def yahoo_news(ticker: str) -> list[str]:
 
         headlines.append(content.get("title"))
 
-    return headlines
-
-
+    return headlines[:10]  # Cap at 10 headlines to keep context concise
 
 
 # ── Quant Agent Tools ────────────────────────────────────────────────────────
 
 @tool
 def compute_fraud_scores(ticker: str) -> str:
-    """Compute Beneish M-Score, Altman Z-Score, and accruals ratio for a
-    company to assess manipulation / financial-distress risk."""
-    # TODO: Wire up to quant_metrics.py calculations
-    return f"[placeholder] Fraud scores for '{ticker}' not computed yet. Implement the quant tool."
+    """Query Databricks for Beneish M-Score, Altman Z-Score, accruals ratio,
+    and composite fraud risk score for a company given its stock ticker.
+
+    Args:
+        ticker: Stock ticker symbol (e.g. 'AAPL').
+
+    Returns:
+        A formatted string with the retrieved metrics, or an error message.
+    """
+    if not DATABRICKS_TOKEN:
+        return (
+            "[error] Databricks credentials not configured. "
+            "Set DATABRICKS_TOKEN in .env."
+        )
+
+    try:
+        print(f"  [tool:compute_fraud_scores] Querying Databricks for ticker={ticker.upper()}")
+
+        connection = sql.connect(
+            server_hostname="dbc-8d2119a9-8a9f.cloud.databricks.com",
+            http_path="/sql/1.0/warehouses/caf31424be59761a",
+            access_token=DATABRICKS_TOKEN,
+        )
+        cursor = connection.cursor()
+
+        cursor.execute(
+            "SELECT Ticker, m_score, z_score, accruals_ratio, composite_fraud_risk_score "
+            "FROM workspace.default.stocks "
+            "WHERE UPPER(Ticker) = UPPER(%(ticker)s) "
+            "LIMIT 1",
+            {"ticker": ticker.upper()},
+        )
+
+        row = cursor.fetchone()
+
+        cursor.close()
+        connection.close()
+
+        if not row:
+            return f"No fraud-score data found in the database for ticker '{ticker}'."
+
+        return (
+            f"Fraud / Risk Metrics for {row[0]}:\n"
+            f"  Beneish M-Score:              {row[1]}\n"
+            f"  Altman Z-Score:               {row[2]}\n"
+            f"  Accruals Ratio:               {row[3]}\n"
+            f"  Composite Fraud Risk Score:   {row[4]}"
+        )
+
+    except Exception as exc:
+        return f"[error] Databricks query failed for '{ticker}': {exc}"
 
 
 # Add more quant tools here …
@@ -132,7 +181,7 @@ def compute_fraud_scores(ticker: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 MAX_DELEGATIONS = 10  # Safety cap to prevent infinite delegation loops (raised for multi-ticker)
-MAX_TOOL_ITERATIONS = 8  # Safety cap for sub-agent tool-calling loops per invocation
+MAX_TOOL_ITERATIONS = 3  # Safety cap for sub-agent tool-calling loops per invocation
 
 class AgentState(TypedDict):
     """Shared state flowing through the graph."""
@@ -202,28 +251,19 @@ quant_tools    = [compute_fraud_scores]
 sentiment_research_agent = _build_sub_agent(
     name="SentimentResearchAgent",
     system_prompt=(
-        "You are a sentiment analysis agent. Your ONLY source of information "
-        "is the tools provided to you. You must ALWAYS call your tools — never "
-        "answer from your own knowledge and never ask clarifying questions.\n\n"
-        "The user may provide one or MULTIPLE company names or tickers. You must "
-        "call the tool ONCE PER TICKER. If the user provides company names, infer "
-        "the ticker yourself (e.g. Nvidia → NVDA, Apple → AAPL, Tesla → TSLA).\n\n"
-        "After receiving ALL tool results, provide a DETAILED analysis PER COMPANY:\n"
-        "For each company:\n"
-        "  a) List every headline returned by the tool for that company.\n"
-        "  b) For each headline, classify its sentiment as Positive, Negative, or "
-        "     Neutral and briefly explain why (1 sentence).\n"
-        "  c) Tally the counts: how many Positive, Negative, Neutral.\n"
-        "  d) Identify the dominant themes across the headlines.\n"
-        "  e) Give an overall sentiment verdict (Strongly Positive, Positive, Mixed, "
-        "     Negative, Strongly Negative) with a short justification.\n\n"
-        "ABSOLUTE RULES:\n"
-        "- Your response must contain ZERO information not returned by the tools.\n"
-        "- Do NOT add background, context, history, or general knowledge.\n"
-        "- Do NOT describe what a company does or its market position.\n"
-        "- If a tool returns no data for a ticker, state exactly: "
-        "  'No headlines were returned for [TICKER].'\n"
-        "- Every claim must trace directly to a specific headline from the tool output."
+        "Sentiment analysis agent. ALWAYS call your tools — never answer from memory.\n"
+        "Call the tool ONCE PER TICKER. Infer tickers from company names.\n\n"
+        "Per company, return ALL of the following:\n"
+        "- Headline count: total number of headlines retrieved\n"
+        "- Sentiment tally: X Positive, Y Negative, Z Neutral\n"
+        "- Key themes: list every distinct theme you can identify from the headlines\n"
+        "- Notable headlines: list up to 5 of the most significant headlines, each\n"
+        "  with its sentiment label (Positive/Negative/Neutral) and a one-sentence\n"
+        "  explanation of why it matters\n"
+        "- Overall sentiment verdict: Strongly Positive / Positive / Mixed / Negative / Strongly Negative\n"
+        "- Brief narrative summary: 2-3 sentences explaining the overall sentiment landscape\n\n"
+        "RULES: Use ONLY tool data. No background/context/general knowledge. "
+        "If no data: 'No headlines returned for [TICKER].'"
     ),
     tools=research_tools,
 )
@@ -231,17 +271,22 @@ sentiment_research_agent = _build_sub_agent(
 quant_agent = _build_sub_agent(
     name="QuantAgent",
     system_prompt=(
-        "You are a quantitative finance analyst specialising in fraud "
-        "detection metrics. Use the tools available to compute and interpret "
-        "Beneish M-Score, Altman Z-Score, accruals ratios, and other "
-        "quantitative indicators.\n\n"
-        "The user may provide one or MULTIPLE tickers. You must call the tool "
-        "ONCE PER TICKER.\n\n"
-        "ABSOLUTE RULES:\n"
-        "- Your response must contain ZERO information not returned by the tools.\n"
-        "- Do NOT add background, context, history, or general knowledge.\n"
-        "- If a tool returns no data or a placeholder, report that exactly as-is.\n"
-        "- Every number, score, or claim must come directly from the tool output."
+        "Quant fraud-detection agent. ALWAYS call your tools — never answer from memory.\n"
+        "Call the tool ONCE PER TICKER.\n\n"
+        "After receiving tool results, provide a THOROUGH interpretation of each metric:\n\n"
+        "For EACH metric returned by the tool:\n"
+        "  1. State the exact numeric value retrieved\n"
+        "  2. State the standard threshold / benchmark range\n"
+        "  3. Classify the result (e.g. 'safe', 'grey zone', 'distress', 'flagged')\n"
+        "  4. Explain in 1-2 sentences what this means for the company\n\n"
+        "Standard thresholds:\n"
+        "- Beneish M-Score: > -1.78 = likely earnings manipulation, < -1.78 = unlikely\n"
+        "- Altman Z-Score: > 2.99 = safe zone, 1.81-2.99 = grey zone, < 1.81 = distress zone\n"
+        "- Accruals Ratio: large positive = aggressive accounting, near zero/negative = conservative\n"
+        "- Composite Fraud Risk Score: 0-100 scale (0-25 low, 25-50 moderate, 50-75 elevated, 75-100 high)\n\n"
+        "After all metrics, write a 2-3 sentence overall risk assessment paragraph.\n\n"
+        "RULES: Use ONLY tool data. No background/context/general knowledge. "
+        "If no data or placeholder, report exactly as-is."
     ),
     tools=quant_tools,
 )
@@ -252,96 +297,90 @@ quant_agent = _build_sub_agent(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ORCHESTRATOR_SYSTEM_PROMPT = """\
-You are the Orchestrator — a financial-analysis system that produces formal reports.
+You are a financial-analysis orchestrator. Your job is to delegate work to sub-agents.
 
-Your job is to understand the user's request and delegate work to the
-appropriate specialist sub-agent. You have two sub-agents:
-
-1. **sentiment research** – for news headlines and sentiment analysis about companies.
-2. **quant**              – for quantitative fraud-detection scores and financial metrics.
-
-The user will provide one or MORE stock tickers and/or company names.
-You MUST delegate to every relevant sub-agent to gather data for ALL
-requested companies. NEVER answer from your own knowledge — always delegate.
-
-You may delegate MULTIPLE times. For example, delegate to
-sentiment_research first (it will handle all tickers at once), then to
-quant after you receive the first result.
-
-To delegate, reply with EXACTLY one delegation token on its own line:
-  DELEGATE:sentiment_research
-  DELEGATE:quant
-
-When you have received all the sub-agent results you need, write your final
-response as a FORMAL REPORT (without any DELEGATE token).
-
-FORMAL REPORT FORMAT:
-- Title: "Financial Analysis Report" (list all companies/tickers covered).
-- Do NOT include a date unless a sub-agent explicitly provided one.
-- If multiple companies: organise the report with a top-level section per
-  company, each containing the relevant sub-sections.
-- Numbered sub-headings per company:
-    1. News Sentiment Analysis
-    2. Quantitative Risk Metrics
-  Omit sub-sections for which no sub-agent data exists.
-- After all per-company sections, include:
-    - Comparative Summary (if multiple companies): side-by-side comparison.
-    - Conclusion: a concise summary based strictly on the sub-agent data above.
-- Use markdown formatting throughout.
-
-ABSOLUTE DATA-INTEGRITY RULES (NEVER VIOLATE THESE):
-- The report must contain ONLY information explicitly present in the
-  sub-agent responses. Treat sub-agent responses as your sole database.
-- Do NOT add ANY background information, company descriptions, market
-  context, historical facts, or general knowledge.
-- Do NOT describe what a company does, its industry position, or its
-  products unless a sub-agent headline explicitly states it.
-- Do NOT infer, extrapolate, speculate, or editorialize beyond the data.
-- Do NOT fabricate or assume sources. Only reference sources that
-  sub-agents explicitly named.
-- Every sentence in the report must be directly traceable to specific
-  sub-agent output. If you cannot point to the exact sub-agent data that
-  supports a sentence, DELETE that sentence.
-- If a sub-agent returned no useful data, state exactly:
-  "No data was returned by the [agent name] for [TICKER]."
+Sub-agents available: sentiment_research, quant.
+To delegate, reply with ONLY the text: DELEGATE:sentiment_research or DELEGATE:quant
+Delegate to sentiment_research first, then quant. One at a time.
+Do NOT write a report — a separate synthesizer handles that after all agents finish.
 """
 
 
 def orchestrator_node(state: AgentState):
     """Main orchestrator LLM call."""
     count = state.get("delegation_count", 0)
-    print(f"[orchestrator] Gemini call (delegations so far: {count}/{MAX_DELEGATIONS})")
+    has_sentiment = any(getattr(m, "name", None) == "sentiment_research_result" for m in state["messages"])
+    has_quant = any(getattr(m, "name", None) == "quant_result" for m in state["messages"])
+
     llm = get_llm()
-    messages = [SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT)] + list(state["messages"])
+
+    if has_sentiment or has_quant:
+        # Strip intermediate messages to reduce context.
+        # Keep only: user request + sub-agent results + a guidance note.
+        user_msgs = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+        sub_agent_msgs = [m for m in state["messages"]
+                          if getattr(m, "name", None) in ("sentiment_research_result", "quant_result")]
+
+        # Build a guidance note so the orchestrator knows what's done vs. remaining.
+        done = []
+        remaining = []
+        if has_sentiment:
+            done.append("sentiment_research")
+        else:
+            remaining.append("sentiment_research")
+        if has_quant:
+            done.append("quant")
+        else:
+            remaining.append("quant")
+
+        if remaining:
+            # Skip the LLM call — just emit the delegation token directly.
+            next_agent = remaining[0]
+            print(f"[orchestrator] Auto-delegating to {next_agent} (done: {done}, remaining: {remaining})")
+            delegate_msg = AIMessage(content=f"DELEGATE:{next_agent}")
+            return {"messages": [delegate_msg]}
+        else:
+            # All agents done — emit a short token to signal synthesis.
+            # Skip the expensive orchestrator LLM call entirely.
+            print(f"[orchestrator] All agents done. Routing to synthesizer.")
+            return {"messages": [AIMessage(content="ALL_AGENTS_DONE")]}
+    else:
+        print(f"[orchestrator] Gemini call (delegations so far: {count}/{MAX_DELEGATIONS})")
+        messages = [SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT)] + list(state["messages"])
+
     response = llm.invoke(messages)
+    print(f"[orchestrator] Gemini responded. Response length: {len(extract_text(response.content))} chars")
     return {"messages": [response]}
 
 
-def _run_sub_agent(agent, state: AgentState) -> dict:
+def _run_sub_agent(agent, state: AgentState, agent_label: str = "sub_agent") -> dict:
     """Run a compiled sub-agent graph and return its final AI message."""
-    result = agent.invoke({"messages": list(state["messages"]), "tool_iterations": 0})
+    # Pass only the user's original request — strip orchestrator/delegation noise.
+    user_msgs = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    result = agent.invoke({"messages": user_msgs, "tool_iterations": 0})
     # Grab only the last AI message produced by the sub-agent.
     sub_messages = result["messages"]
     final_ai = [m for m in sub_messages if isinstance(m, AIMessage)]
     if final_ai:
         content = extract_text(final_ai[-1].content)
-        reply = AIMessage(content=content, name="sub_agent")
+        reply = AIMessage(content=content, name=agent_label)
     else:
-        reply = AIMessage(content="Sub-agent produced no response.", name="sub_agent")
+        reply = AIMessage(content="Sub-agent produced no response.", name=agent_label)
+    print(f"  [{agent_label}] Finished. Response length: {len(extract_text(reply.content))} chars")
     return {"messages": [reply]}
 
 
 def sentiment_research_node(state: AgentState):
     count = state.get("delegation_count", 0) + 1
     print(f"[orchestrator] Delegating to sentiment_research (delegation {count}/{MAX_DELEGATIONS})")
-    result = _run_sub_agent(sentiment_research_agent, state)
+    result = _run_sub_agent(sentiment_research_agent, state, agent_label="sentiment_research_result")
     result["delegation_count"] = 1  # increment delegation counter
     return result
 
 def quant_node(state: AgentState):
     count = state.get("delegation_count", 0) + 1
     print(f"[orchestrator] Delegating to quant (delegation {count}/{MAX_DELEGATIONS})")
-    result = _run_sub_agent(quant_agent, state)
+    result = _run_sub_agent(quant_agent, state, agent_label="quant_result")
     result["delegation_count"] = 1  # increment delegation counter
     return result
 
@@ -360,55 +399,101 @@ def route_after_orchestrator(state: AgentState) -> Literal["sentiment_research",
     count = state.get("delegation_count", 0)
     if count >= MAX_DELEGATIONS:
         print(f"[router] Delegation cap reached ({MAX_DELEGATIONS}). Forcing synthesis/end.")
-        if any(getattr(m, "name", None) == "sub_agent" for m in state["messages"]):
+        has_results = any(getattr(m, "name", None) in ("sentiment_research_result", "quant_result") for m in state["messages"])
+        if has_results:
             return "synthesize"
         return END
     
     # Check for a DELEGATE: token in the orchestrator's latest message.
+    # Also prevent re-delegation to an agent that already returned results.
+    already_has_sentiment = any(getattr(m, "name", None) == "sentiment_research_result" for m in state["messages"])
+    already_has_quant = any(getattr(m, "name", None) == "quant_result" for m in state["messages"])
+
     for line in text.splitlines():
         stripped = line.strip()
         if stripped == "DELEGATE:sentiment_research":
+            if already_has_sentiment:
+                print(f"[router] Blocked re-delegation to sentiment_research (already has results)")
+                continue
             print(f"[router] Found DELEGATE:sentiment_research token")
             return "sentiment_research"
         if stripped == "DELEGATE:quant":
+            if already_has_quant:
+                print(f"[router] Blocked re-delegation to quant (already has results)")
+                continue
             print(f"[router] Found DELEGATE:quant token")
             return "quant"
     
-    # No delegation token — if sub-agent data exists, synthesize; otherwise end.
-    if any(getattr(m, "name", None) == "sub_agent" for m in state["messages"]):
-        # The orchestrator chose NOT to delegate again — its message IS the
-        # final synthesis (it already has all sub-agent data in context).
+    # No delegation token (or all requested agents already ran).
+    has_any_results = already_has_sentiment or already_has_quant
+    if has_any_results:
+        text_stripped = text.strip()
+        # ALL_AGENTS_DONE signal, empty, stale DELEGATE, or too-short response → synthesize.
+        if not text_stripped or text_stripped == "ALL_AGENTS_DONE" or text_stripped.startswith("DELEGATE:") or len(text_stripped) < 100:
+            print(f"[router] Routing to synthesizer.")
+            return "synthesize"
+        # Otherwise the orchestrator wrote a real report — we're done.
+        print(f"[router] Final report received ({len(text_stripped)} chars). Ending.")
         return END
     return END
 
 
 def synthesize_node(state: AgentState):
-    """Fallback synthesis when the delegation cap is hit."""
+    """Generate the final report from sub-agent data."""
     print(f"[synthesizer] Gemini call — generating final report from sub-agent data")
     llm = get_llm()
+    # Only pass user messages + sub-agent results to keep context small.
+    user_msgs = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+    sub_agent_msgs = [m for m in state["messages"]
+                      if getattr(m, "name", None) in ("sentiment_research_result", "quant_result")]
     messages = (
         [SystemMessage(content=(
-            "You have reached the maximum number of delegations. Write a FORMAL "
-            "REPORT using ONLY the data the sub-agents returned.\n\n"
-            "FORMAL REPORT FORMAT:\n"
-            "- Title: 'Financial Analysis Report' (list all companies/tickers).\n"
-            "- Do NOT include a date unless a sub-agent explicitly provided one.\n"
-            "- If multiple companies: organise per company with sub-sections.\n"
-            "- Sub-headings: 1. News Sentiment Analysis, 2. Quantitative Risk "
-            "  Metrics. Omit sections with no data.\n"
-            "- Comparative Summary (if multiple companies).\n"
-            "- Conclusion: summarise strictly from sub-agent data.\n"
-            "- Use markdown formatting.\n\n"
-            "ABSOLUTE DATA-INTEGRITY RULES (NEVER VIOLATE):\n"
-            "- The report must contain ONLY information from sub-agent responses.\n"
-            "- Do NOT add background, company descriptions, market context, "
-            "  historical facts, or general knowledge.\n"
-            "- Do NOT infer, extrapolate, speculate, or editorialize.\n"
-            "- Every sentence must trace to specific sub-agent output.\n"
-            "- If no data was returned, state that explicitly.\n"
-            "- Do NOT delegate again."
+            "You are a senior financial analyst. Write a COMPREHENSIVE, FORMAL markdown report "
+            "using ONLY the sub-agent data provided below. The report must be long, thorough, "
+            "and explicitly reference the data retrieved from each agent.\n\n"
+            "REQUIRED STRUCTURE:\n\n"
+            "# Financial Analysis Report\n"
+            "State the ticker(s) analysed.\n\n"
+            "## Executive Summary\n"
+            "A concise 3-5 sentence overview of all key findings across every section.\n\n"
+            "Then, FOR EACH COMPANY analysed, include ALL of the following sections:\n\n"
+            "## [Company Ticker] — News Sentiment Analysis\n"
+            "### Data Retrieved\n"
+            "Explicitly state: number of headlines retrieved, source (Yahoo Finance News).\n"
+            "If no headlines were returned, state that clearly and skip to the next section.\n"
+            "### Sentiment Breakdown\n"
+            "Report the exact sentiment tally (X Positive, Y Negative, Z Neutral).\n"
+            "### Key Themes\n"
+            "List and briefly discuss each theme identified in the headlines.\n"
+            "### Notable Headlines\n"
+            "Present the most significant headlines with their sentiment labels and "
+            "explain the relevance of each.\n"
+            "### Sentiment Verdict\n"
+            "State the overall verdict and provide a narrative interpretation.\n\n"
+            "## [Company Ticker] — Quantitative Risk Metrics\n"
+            "### Data Retrieved\n"
+            "Explicitly state: which metrics were retrieved, source (Databricks SQL warehouse).\n"
+            "If no data was available, state that clearly and skip to the next section.\n"
+            "### Metric-by-Metric Analysis\n"
+            "For EACH metric (M-Score, Z-Score, Accruals Ratio, Composite Fraud Risk Score):\n"
+            "- State the exact value retrieved from the quant agent\n"
+            "- State the standard threshold / benchmark\n"
+            "- Classify the result (safe / grey zone / flagged / etc.)\n"
+            "- Explain what this means for the company in 1-2 sentences\n"
+            "### Overall Risk Assessment\n"
+            "Synthesise the quantitative metrics into a paragraph-length risk assessment.\n\n"
+            "## Conclusion & Integrated Assessment\n"
+            "Synthesise ALL findings from ALL sections (sentiment + quant) into a detailed, "
+            "actionable conclusion. Discuss how the sentiment and quantitative data "
+            "corroborate or contradict each other. Provide a clear overall assessment.\n\n"
+            "RULES:\n"
+            "- Use ONLY the sub-agent data below. No outside knowledge, background descriptions, "
+            "  or speculation.\n"
+            "- Every claim must trace back to specific data from a sub-agent.\n"
+            "- If a section has no data, state that explicitly — do not skip the heading.\n"
+            "- Do NOT delegate. Write the complete report now."
         ))]
-        + list(state["messages"])
+        + user_msgs + sub_agent_msgs
     )
     response = llm.invoke(messages)
     return {"messages": [response]}
