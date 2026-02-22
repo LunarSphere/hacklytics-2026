@@ -86,6 +86,19 @@
     return "WEAK";
   }
 
+  // Basic markdown-to-summary helper (fallback when backend omits summary)
+  function summarizeMarkdown(md, maxLen) {
+    if (!md) return "";
+    var text = md
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/`[^`]*`/g, " ")
+      .replace(/[#>*_\-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!maxLen || text.length <= maxLen) return text;
+    return text.slice(0, maxLen).trim() + "...";
+  }
+
   /* ----------------------------------------------------------
      Ticker parsing
      ---------------------------------------------------------- */
@@ -678,7 +691,7 @@
         reportPromise.then(function (report) {
           if (report && report.report_markdown) {
             lastReportMarkdown = report.report_markdown;
-            lastReportSummary = report.summary || "";
+            lastReportSummary = report.summary || summarizeMarkdown(report.report_markdown, 420);
             reportSummaryText.textContent = lastReportSummary || "Report ready.";
             reportSummary.classList.remove("loading");
           } else {
@@ -1169,7 +1182,21 @@
     downloadLabel.textContent = "Preparing report...";
 
     setTimeout(function () {
-      var tickers = currentResult.map(function (s) { return s.ticker; });
+      var tickerSet = {};
+      var tickers = [];
+      if (Array.isArray(currentResult)) {
+        for (var t = 0; t < currentResult.length; t++) {
+          var tk = currentResult[t].ticker;
+          if (tk && !tickerSet[tk]) { tickerSet[tk] = true; tickers.push(tk); }
+        }
+      }
+      if (Array.isArray(currentErrors)) {
+        for (var ce = 0; ce < currentErrors.length; ce++) {
+          var et = currentErrors[ce].ticker;
+          if (et && !tickerSet[et]) { tickerSet[et] = true; tickers.push(et); }
+        }
+      }
+      if (tickers.length === 0) tickers = ["report"];
 
       if (lastReportMarkdown) {
         var blobMd = new Blob([lastReportMarkdown], { type: "text/markdown" });
