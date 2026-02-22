@@ -246,6 +246,22 @@ def get_cik_from_company_name(company_name):
     return None, None, None
 
 
+def get_cik_from_ticker(ticker_symbol):
+    if not os.path.exists(LOCAL_TICKERS_FILE):
+        print(f"Error: {LOCAL_TICKERS_FILE} not found.")
+        sys.exit(1)
+
+    with open(LOCAL_TICKERS_FILE, "r") as f:
+        data = json.load(f)
+
+    ticker_symbol = ticker_symbol.upper()
+    for entry in data.values():
+        if entry["ticker"].upper() == ticker_symbol:
+            return str(entry["cik_str"]).zfill(10), entry["title"], entry["ticker"]
+
+    return None, None, None
+
+
 def process_form4_insiders(ticker):
     insider_data = {}
 

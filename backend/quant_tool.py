@@ -25,6 +25,7 @@ def ensure_table(cursor):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS stocks (
             Ticker                     STRING,
+            company_name               STRING,
             m_score                    DOUBLE,
             z_score                    DOUBLE,
             accruals_ratio             DOUBLE,
@@ -34,12 +35,13 @@ def ensure_table(cursor):
     """)
 
 
-def upsert_to_databricks(cursor, ticker: str, results: dict):
+def upsert_to_databricks(cursor, ticker: str, company_name: str, results: dict):
     merge_sql = """
         MERGE INTO stocks AS t
         USING (
             SELECT
                 :ticker                     AS Ticker,
+                :company_name               AS company_name,
                 :m_score                    AS m_score,
                 :z_score                    AS z_score,
                 :accruals_ratio             AS accruals_ratio,
@@ -50,6 +52,7 @@ def upsert_to_databricks(cursor, ticker: str, results: dict):
 
         WHEN MATCHED AND t.last_updated < current_timestamp() - INTERVAL 1 DAY THEN
             UPDATE SET
+                t.company_name               = s.company_name,
                 t.m_score                    = s.m_score,
                 t.z_score                    = s.z_score,
                 t.accruals_ratio             = s.accruals_ratio,
@@ -57,12 +60,13 @@ def upsert_to_databricks(cursor, ticker: str, results: dict):
                 t.last_updated               = s.last_updated
 
         WHEN NOT MATCHED THEN
-            INSERT (Ticker, m_score, z_score, accruals_ratio, composite_fraud_risk_score, last_updated)
-            VALUES (s.Ticker, s.m_score, s.z_score, s.accruals_ratio, s.composite_fraud_risk_score, s.last_updated)
+            INSERT (Ticker, company_name, m_score, z_score, accruals_ratio, composite_fraud_risk_score, last_updated)
+            VALUES (s.Ticker, s.company_name, s.m_score, s.z_score, s.accruals_ratio, s.composite_fraud_risk_score, s.last_updated)
     """
 
     cursor.execute(merge_sql, parameters={
         "ticker":                     ticker,
+        "company_name":               company_name,
         "m_score":                    results["m_score"],
         "z_score":                    results["z_score"],
         "accruals_ratio":             results["accruals_ratio"],
@@ -79,18 +83,15 @@ def upsert_to_databricks(cursor, ticker: str, results: dict):
 # Pipeline
 # -------------------------
 
-def run_pipeline(company_name: str):
-    # 1. Resolve company → CIK + ticker
-    ticker = "AAPL"  # default for testing
-    cik, official_name, ticker = sec_module.get_cik_from_company_name(company_name)
+def run_pipeline(ticker_input: str):
+    # 1. Resolve ticker → CIK + company name
+    ticker_input = ticker_input.upper()
+    cik, official_name, ticker = sec_module.get_cik_from_ticker(ticker_input)
     if not cik:
-        print(f"[ERROR] Company '{company_name}' not found in tickers.json.")
-        sys.exit(1)
-    if ticker is None:
-        print(f"[ERROR] No ticker found for company '{company_name}'.")
+        print(f"[ERROR] Ticker '{ticker_input}' not found in tickers.json.")
         sys.exit(1)
     ticker = str(ticker)
-    
+
     print(f"[INFO] Company : {official_name}")
     print(f"[INFO] Ticker  : {ticker}")
     print(f"[INFO] CIK     : {cik}")
@@ -145,12 +146,12 @@ def run_pipeline(company_name: str):
     cursor = conn.cursor()
     try:
         ensure_table(cursor)
-        upsert_to_databricks(cursor, ticker, results)
+        upsert_to_databricks(cursor, ticker, official_name, results)
     finally:
         cursor.close()
         conn.close()
 
-    return ticker, results
+    return ticker, official_name, results
 
 
 # -------------------------
@@ -162,10 +163,10 @@ def main():
         description="Run the full SEC → metrics → Databricks pipeline for a company."
     )
     parser.add_argument(
-        "--company",
+        "--ticker",
         type=str,
         required=True,
-        help='Company name to look up, e.g. "Apple Inc."',
+        help='Stock ticker to look up, e.g. "AAPL"',
     )
     args = parser.parse_args()
 
@@ -175,8 +176,8 @@ def main():
         print(f"[ERROR] Missing required environment variable(s): {', '.join(missing)}")
         sys.exit(1)
 
-    ticker, results = run_pipeline(args.company)
-    print(f"\n[DONE] {ticker} — composite fraud risk score: {results['composite_fraud_risk_score']} / 100")
+    ticker, company_name, results = run_pipeline(args.ticker)
+    print(f"\n[DONE] {ticker} ({company_name}) — composite fraud risk score: {results['composite_fraud_risk_score']} / 100")
 
 
 if __name__ == "__main__":
